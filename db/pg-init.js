@@ -13,6 +13,7 @@ const mainSchema = `
     unit VARCHAR(50) DEFAULT '',
     market_price TEXT DEFAULT '',
     type VARCHAR(100) DEFAULT '',
+    gift_of VARCHAR(100) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
@@ -80,6 +81,7 @@ const douyinSchema = `
     unit VARCHAR(50) DEFAULT '',
     market_price TEXT DEFAULT '',
     type VARCHAR(100) DEFAULT '',
+    gift_of VARCHAR(100) DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
@@ -135,6 +137,12 @@ const douyinSchema = `
   WHERE NOT EXISTS (SELECT 1 FROM douyin_config WHERE config_key = 'channel_options');
 `;
 
+const migrationSQL = `
+  -- 添加 gift_of 字段（兼容已有数据库）
+  ALTER TABLE main_products ADD COLUMN IF NOT EXISTS gift_of VARCHAR(100) DEFAULT NULL;
+  ALTER TABLE douyin_products ADD COLUMN IF NOT EXISTS gift_of VARCHAR(100) DEFAULT NULL;
+`;
+
 async function initPgDatabase(pgDb) {
   // 执行主系统表创建
   await pgDb.query(mainSchema);
@@ -143,6 +151,14 @@ async function initPgDatabase(pgDb) {
   // 执行抖音系统表创建
   await pgDb.query(douyinSchema);
   console.log('[pg-init] 抖音系统表结构已创建');
+
+  // 执行迁移（已有数据库加字段）
+  try {
+    await pgDb.query(migrationSQL);
+    console.log('[pg-init] 迁移已执行（gift_of 字段）');
+  } catch(e) {
+    console.log('[pg-init] 迁移跳过:', e.message);
+  }
 }
 
 module.exports = { initPgDatabase };
