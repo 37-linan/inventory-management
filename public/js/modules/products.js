@@ -100,17 +100,17 @@ const ProductsModule = {
                       const isGift = p._isGift;
                       return `
                       <tr onclick="ProductsModule.editProduct('${system}','${p.code}')" style="cursor:pointer;${isGift ? 'background:linear-gradient(to right, #fff8e1 0%, #fafafa 60%);border-left:3px solid #fbbc04;' : ''}">
-                        <td style="${isGift ? 'padding-left:38px;position:relative;' : ''}">
+                        <td style="${isGift ? 'padding-left:38px;padding-right:32px;position:relative;' : ''}">
                           ${isGift ? '<span style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:#fbbc04;font-size:14px;">└</span><span style="display:inline-block;background:#fbbc04;color:white;font-size:10px;padding:1px 6px;border-radius:8px;margin-right:6px;font-weight:500;">赠品</span>' : ''}
                           <code style="background:${isGift ? 'transparent' : '#f0f0f0'};padding:2px 6px;border-radius:4px;font-size:12px;">${p.code}</code>
                         </td>
-                        <td style="${isGift ? 'padding-left:38px;' : ''}">
+                        <td style="${isGift ? 'padding-left:38px;padding-right:32px;' : ''}">
                           <strong${isGift ? ' style="font-size:13px;color:#6b7280;font-weight:400;"' : ''}>${p.name}</strong>
                           ${(!p.type || !p.spec || !p.unit) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}
                         </td>
-                        <td>${p.spec || '<span style="color:#bbb;">-</span>'}</td>
-                        <td>${p.unit || '<span style="color:#bbb;">-</span>'}</td>
-                        <td>${isGift ? '<span style="font-size:11px;color:#fbbc04;font-weight:500;">赠品</span>' : (p.type || '<span style="color:#bbb;">-</span>')}</td>
+                        <td style="${isGift ? 'padding-right:32px;' : ''}">${p.spec || '<span style="color:#bbb;">-</span>'}</td>
+                        <td style="${isGift ? 'padding-right:32px;' : ''}">${p.unit || '<span style="color:#bbb;">-</span>'}</td>
+                        <td style="${isGift ? 'padding-right:32px;color:#fbbc04;font-weight:500;font-size:11px;' : ''}">${isGift ? '赠品' : (p.type || '<span style="color:#bbb;">-</span>')}</td>
                         <td>${p.market_price || '<span style="color:#bbb;">-</span>'}</td>
                         <td>
                           <div class="chart-container" id="chart-${system}-${p.code}"></div>
