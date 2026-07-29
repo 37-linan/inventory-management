@@ -98,24 +98,37 @@ const ProductsModule = {
                   <tbody>
                     ${items.map(p => {
                       const isGift = p._isGift;
+                      if (isGift) {
+                        return `
+                        <tr style="cursor:pointer;" onclick="ProductsModule.editProduct('${system}','${p.code}')">
+                          <td colspan="8" style="padding:6px 10px;">
+                            <div style="background:linear-gradient(to right, #fff8e1, #fafafa);border-left:3px solid #fbbc04;border-radius:4px;margin:4px 0;padding:8px 14px;display:inline-flex;align-items:center;gap:16px;max-width:100%;">
+                              <span style="background:#fbbc04;color:white;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:500;flex-shrink:0;">└ 赠品</span>
+                              <code style="background:transparent;padding:2px 6px;font-size:12px;font-weight:500;flex-shrink:0;">${p.code}</code>
+                              <strong style="font-size:13px;color:#6b7280;font-weight:400;flex-shrink:0;">${p.name}</strong>
+                              <span style="font-size:12px;color:#6b7280;flex-shrink:0;">${p.spec || '<span style=\"color:#bbb;\">-</span>'}</span>
+                              <span style="font-size:12px;color:#6b7280;flex-shrink:0;">${p.unit || '<span style=\"color:#bbb;\">-</span>'}</span>
+                            </div>
+                          </td>
+                        </tr>`;
+                      }
                       return `
-                      <tr onclick="ProductsModule.editProduct('${system}','${p.code}')" style="cursor:pointer;${isGift ? 'background:linear-gradient(to right, #fff8e1 0%, #fafafa 100%);border-left:3px solid #fbbc04;' : ''}">
-                        <td style="${isGift ? 'padding-left:38px;padding-right:80px;position:relative;' : ''}">
-                          ${isGift ? '<span style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:#fbbc04;font-size:14px;">└</span><span style="display:inline-block;background:#fbbc04;color:white;font-size:10px;padding:1px 6px;border-radius:8px;margin-right:6px;font-weight:500;">赠品</span>' : ''}
-                          <code style="background:${isGift ? 'transparent' : '#f0f0f0'};padding:2px 6px;border-radius:4px;font-size:12px;">${p.code}</code>
+                      <tr onclick="ProductsModule.editProduct('${system}','${p.code}')" style="cursor:pointer;">
+                        <td>
+                          <code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:12px;">${p.code}</code>
                         </td>
-                        <td style="${isGift ? 'padding-left:38px;padding-right:80px;' : ''}">
-                          <strong${isGift ? ' style="font-size:13px;color:#6b7280;font-weight:400;"' : ''}>${p.name}</strong>
+                        <td>
+                          <strong>${p.name}</strong>
                           ${(!p.type || !p.spec || !p.unit) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}
                         </td>
-                        <td style="${isGift ? 'padding-right:80px;' : ''}">${p.spec || '<span style="color:#bbb;">-</span>'}</td>
-                        <td style="${isGift ? 'padding-right:80px;' : ''}">${p.unit || '<span style="color:#bbb;">-</span>'}</td>
-                        <td style="${isGift ? 'padding-right:80px;color:#fbbc04;font-weight:500;font-size:11px;' : ''}">${isGift ? '赠品' : (p.type || '<span style="color:#bbb;">-</span>')}</td>
+                        <td>${p.spec || '<span style="color:#bbb;">-</span>'}</td>
+                        <td>${p.unit || '<span style="color:#bbb;">-</span>'}</td>
+                        <td>${p.type || '<span style="color:#bbb;">-</span>'}</td>
                         <td>${p.market_price || '<span style="color:#bbb;">-</span>'}</td>
-                        <td style="${isGift ? 'padding-right:80px;' : ''}">
+                        <td>
                           <div class="chart-container" id="chart-${system}-${p.code}"></div>
                         </td>
-                        <td style="white-space:nowrap;${isGift ? 'padding-right:80px;' : ''}">
+                        <td style="white-space:nowrap;">
                           <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();ProductsModule.editProduct('${system}','${p.code}')">编辑</button>
                           <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}')">删除</button>
                           <button class="btn btn-sm btn-success" onclick="event.stopPropagation();ProductsModule.setPrice('${system}','${p.code}','${p.name}')">💰 价格</button>
