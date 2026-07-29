@@ -1,0 +1,30 @@
+# Render Blueprint - 出入库库存管理工作台
+# 部署说明: 将此仓库连接到 Render 即可自动部署
+# 免费额度: Web Service 750小时/月 + PostgreSQL 1GB
+# 注意: 15分钟无访问会自动休眠，再次访问需等待3-5秒唤醒
+
+services:
+  # ---------- Web 服务 ----------
+  - type: web
+    name: inventory-management
+    env: node
+    region: singapore  # 新加坡节点，国内访问速度较好
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.2
+      - key: DATABASE_URL
+        fromDatabase:
+          name: inventory-db
+          property: connectionString
+
+  # ---------- PostgreSQL 数据库 ----------
+databases:
+  - name: inventory-db
+    plan: free
+    region: singapore
+    databaseName: inventory
+    ipAllowList: []  # 允许所有 IP（通过 DATABASE_URL 加密连接）

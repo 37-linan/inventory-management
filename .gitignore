@@ -1,0 +1,28 @@
+# Node
+node_modules/
+node.exe
+
+# 本地数据
+db/*.db
+db/*.db-wal
+db/*.db-shm
+
+# 日志
+logs/
+server_out.txt
+server_err.txt
+
+# 上传文件
+uploads/
+ 
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 本地数据库备份
+migrations/data-backup.json

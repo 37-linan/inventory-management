@@ -1,0 +1,17 @@
+{
+  "name": "inventory-management-system",
+  "version": "1.0.0",
+  "description": "出入库库存管理工作台 - 支持云端部署",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "export-data": "node db/export-data.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.22.0",
+    "uuid": "^10.0.0"
+  }
+}
