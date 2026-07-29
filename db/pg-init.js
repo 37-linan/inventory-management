@@ -134,7 +134,7 @@ async function seedDefaultConfig(pgDb) {
     // 主系统 - 检查是否已有配置
     const mainCount = await pgDb.query('SELECT COUNT(*) as c FROM main_config');
     if (parseInt(mainCount.rows[0].c) === 0) {
-      await pgDb.query(`INSERT INTO main_config (config_key, config_value) VALUES ('product_types', '["电子设备","办公用品","耗材","其他"]')`);
+      await pgDb.query(`INSERT INTO main_config (config_key, config_value) VALUES ('product_types', '["抖音刷券","屈臣氏"]')`);
       await pgDb.query(`INSERT INTO main_config (config_key, config_value) VALUES ('channel_options', '["淘宝","京东","拼多多","抖音","线下采购"]')`);
       console.log('[pg-init] 主系统默认配置已初始化');
     } else {
