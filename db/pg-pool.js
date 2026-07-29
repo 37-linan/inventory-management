@@ -16,6 +16,8 @@ class PgDatabase {
     this.pool = new Pool({
       connectionString,
       ssl: { rejectUnauthorized: false },
+      // 强制使用 UTF-8 编码，防止中文乱码（Railway 默认可能是 SQL_ASCII）
+      client_encoding: 'UTF8',
       // 连接池设置
       max: 5,
       idleTimeoutMillis: 30000,
@@ -25,6 +27,13 @@ class PgDatabase {
     // 监听连接错误
     this.pool.on('error', (err) => {
       console.error('[PgDatabase] 连接池错误:', err.message);
+    });
+
+    // 连接时再次强制设置编码
+    this.pool.on('connect', (client) => {
+      client.query("SET client_encoding TO 'UTF8'", (err) => {
+        if (err) console.error('[PgDatabase] 设置编码失败:', err.message);
+      });
     });
   }
 
