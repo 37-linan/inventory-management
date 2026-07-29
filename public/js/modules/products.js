@@ -57,18 +57,29 @@ const ProductsModule = {
         giftMap[g.gift_of].push(g);
       });
 
+      // 主品归到自己的类型下，只有抖音刷券下挂赠品
       mainProducts.forEach(p => {
         const type = p.type || '未分类';
         if (!groups[type]) groups[type] = [];
         groups[type].push(p);
-        // 把赠品也挂在主品后面，标记为赠品
-        if (giftMap[p.code]) {
+        // 仅在抖音刷券类型下挂赠品
+        if (type === '抖音刷券' && giftMap[p.code]) {
           giftMap[p.code].forEach(g => {
             g._isGift = true;
             groups[type].push(g);
           });
         }
       });
+
+      // 游离的赠品（主品不存在）放到抖音刷券末尾
+      const orphanGifts = gifts.filter(g => !mainProducts.some(m => m.code === g.gift_of));
+      if (orphanGifts.length > 0) {
+        if (!groups['抖音刷券']) groups['抖音刷券'] = [];
+        orphanGifts.forEach(g => {
+          g._isGift = true;
+          groups['抖音刷券'].push(g);
+        });
+      }
 
       let html = '';
       for (const [type, items] of Object.entries(groups)) {
