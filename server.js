@@ -5,6 +5,23 @@ const os = require('os');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 
+// ============ 加载 .env 文件（云部署需要）============
+const envPath = path.join(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf-8');
+  envContent.split(/\r?\n/).forEach(line => {
+    line = line.trim();
+    if (!line || line.startsWith('#')) return;
+    const idx = line.indexOf('=');
+    if (idx > 0) {
+      const key = line.slice(0, idx).trim();
+      const value = line.slice(idx + 1).trim();
+      if (!process.env[key]) process.env[key] = value;
+    }
+  });
+  console.log('[env] 已加载 .env 文件');
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const LOG_DIR = path.join(__dirname, 'logs');
