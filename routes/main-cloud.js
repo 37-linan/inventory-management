@@ -29,18 +29,18 @@ module.exports = function(db) {
 
   router.post('/products', async (req, res) => {
     try {
-      const { code, name, spec, unit, market_price, type } = req.body;
+      const { code, name, spec, unit, market_price, type, gift_of } = req.body;
       if (!code || !name) return res.status(400).json({ error: '编码和名称为必填项' });
       
       const existing = await db.query('SELECT id FROM main_products WHERE code = ?', [code]);
       if (existing.rows[0]) return res.status(400).json({ error: '该产品编号已存在' });
 
       const result = await db.query(
-        'INSERT INTO main_products (code, name, spec, unit, market_price, type) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
-        [code, name, spec || '', unit || '', market_price || '', type || '']
+        'INSERT INTO main_products (code, name, spec, unit, market_price, type, gift_of) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
+        [code, name, spec || '', unit || '', market_price || '', type || '', gift_of || null]
       );
       
-      res.json({ success: true, id: result.rows[0].id });
+      res.json({ success: true, id: result.rows[0].id, gift_of: gift_of || null });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -48,14 +48,22 @@ module.exports = function(db) {
 
   router.put('/products/:code', async (req, res) => {
     try {
-      const { name, spec, unit, market_price, type } = req.body;
+      const { name, spec, unit, market_price, type, gift_of } = req.body;
       const existing = await db.query('SELECT id FROM main_products WHERE code = ?', [req.params.code]);
       if (!existing.rows[0]) return res.status(404).json({ error: '产品不存在' });
 
-      await db.query(
-        `UPDATE main_products SET name=?, spec=?, unit=?, market_price=?, type=?, updated_at=CURRENT_TIMESTAMP WHERE code=?`,
-        [name, spec, unit, market_price, type, req.params.code]
-      );
+      // 支持更新 gift_of 字段
+      if (gift_of !== undefined) {
+        await db.query(
+          `UPDATE main_products SET name=?, spec=?, unit=?, market_price=?, type=?, gift_of=?, updated_at=CURRENT_TIMESTAMP WHERE code=?`,
+          [name, spec, unit, market_price, type, gift_of || null, req.params.code]
+        );
+      } else {
+        await db.query(
+          `UPDATE main_products SET name=?, spec=?, unit=?, market_price=?, type=?, updated_at=CURRENT_TIMESTAMP WHERE code=?`,
+          [name, spec, unit, market_price, type, req.params.code]
+        );
+      }
       
       res.json({ success: true });
     } catch (e) {
