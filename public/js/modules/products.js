@@ -119,7 +119,7 @@ const ProductsModule = {
                               <strong style="font-size:13px;color:#6b7280;font-weight:400;flex-shrink:0;">${p.name}</strong>
                               <span style="font-size:12px;color:#6b7280;flex-shrink:0;">${p.spec || '<span style=\"color:#bbb;\">-</span>'}</span>
                               <span style="font-size:12px;color:#6b7280;flex-shrink:0;">${p.unit || '<span style=\"color:#bbb;\">-</span>'}</span>
-                              <button onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}')" style="background:#fbbc04;color:white;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;flex-shrink:0;font-weight:500;">删除</button>
+                              <button onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}','${p.type}')" style="background:#fbbc04;color:white;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;flex-shrink:0;font-weight:500;">删除</button>
                             </div>
                           </td>
                         </tr>`;
@@ -142,7 +142,7 @@ const ProductsModule = {
                         </td>
                         <td style="white-space:nowrap;">
                           <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();ProductsModule.editProduct('${system}','${p.code}')">编辑</button>
-                          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}')">删除</button>
+                          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}','${p.type}')">删除</button>
                           <button class="btn btn-sm btn-success" onclick="event.stopPropagation();ProductsModule.setPrice('${system}','${p.code}','${p.name}')">💰 价格</button>
                         </td>
                       </tr>`;
@@ -348,10 +348,11 @@ const ProductsModule = {
     }
   },
 
-  async deleteProduct(system, code) {
+  async deleteProduct(system, code, type) {
     if (!confirm(`确认删除编码为 "${code}" 的产品？`)) return;
     try {
-      await API.del(`/api/${system}/products/${code}`);
+      const url = type ? `/api/${system}/products/${code}?type=${encodeURIComponent(type)}` : `/api/${system}/products/${code}`;
+      await API.del(url);
       showToast('删除成功');
       await this.loadProducts(system);
     } catch (e) {
