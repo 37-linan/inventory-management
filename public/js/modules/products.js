@@ -322,6 +322,9 @@ const ProductsModule = {
       '<option value="">请选择行情类型</option>' +
       ['固定价格','浮动价格','市场价','协议价','无']
         .map(function(p){return '<option value="'+p+'">'+p+'</option>';}).join('') + '</select></div>' +
+      '<div class="form-group"><label>套组数量</label>' +
+      '<input type="number" id="gift-bundle-qty" value="1" min="1" max="999" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:13px;" />' +
+      '<div style="font-size:11px;color:var(--text-light);margin-top:4px;">库存 = 入库数量 × 套组数量</div></div>' +
       '<div style="font-size:12px;color:var(--text-secondary);padding:8px 0;">' +
       '<span style="color:var(--info);">提示:</span> 类型自动设为"抖音刷券"</div>' +
       '<div class="form-actions" style="display:flex;gap:10px;">' +
@@ -343,6 +346,7 @@ const ProductsModule = {
     const spec = document.getElementById('gift-spec').value.trim();
     const unit = document.getElementById('gift-unit').value;
     const marketPrice = document.getElementById('gift-market-price').value;
+    const bundleQty = parseInt(document.getElementById('gift-bundle-qty')?.value) || 1;
 
     if (!code || !name) {
       showToast('请填写赠品编码和名称');
@@ -358,7 +362,7 @@ const ProductsModule = {
         market_price: marketPrice,
         type: '抖音刷券',
         gift_of: mainCode,
-        bundle_qty: 1  // 赠品默认套组数量为1
+        bundle_qty: bundleQty
       });
       showToast('赠品添加成功！');
       closeModal();
