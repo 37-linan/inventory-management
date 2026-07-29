@@ -4,10 +4,10 @@
  */
 
 const mainSchema = `
-  -- 产品信息表
+  -- 产品信息表（编码不作唯一约束，相同编码可在不同套餐中重复）
   CREATE TABLE IF NOT EXISTS main_products (
     id SERIAL PRIMARY KEY,
-    code VARCHAR(100) UNIQUE NOT NULL,
+    code VARCHAR(100) NOT NULL,
     name VARCHAR(200) NOT NULL,
     spec TEXT DEFAULT '',
     unit VARCHAR(50) DEFAULT '',
@@ -123,6 +123,9 @@ const migrationSQL = `
   -- 添加 gift_of 字段（兼容已有数据库）
   ALTER TABLE main_products ADD COLUMN IF NOT EXISTS gift_of VARCHAR(100) DEFAULT NULL;
   ALTER TABLE douyin_products ADD COLUMN IF NOT EXISTS gift_of VARCHAR(100) DEFAULT NULL;
+  -- 移除编码唯一约束（允许相同编码在不同套餐中出现）
+  ALTER TABLE main_products DROP CONSTRAINT IF EXISTS main_products_code_key;
+  ALTER TABLE douyin_products DROP CONSTRAINT IF EXISTS douyin_products_code_key;
 `;
 
 /**
