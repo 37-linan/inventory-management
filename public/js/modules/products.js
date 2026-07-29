@@ -47,19 +47,38 @@ const ProductsModule = {
 
       // 按类型分组
       const groups = {};
-      products.forEach(p => {
+      // 分离主品和赠品
+      const mainProducts = products.filter(p => !p.gift_of);
+      const gifts = products.filter(p => p.gift_of);
+      // 按主品编码建立赠品索引
+      const giftMap = {};
+      gifts.forEach(g => {
+        if (!giftMap[g.gift_of]) giftMap[g.gift_of] = [];
+        giftMap[g.gift_of].push(g);
+      });
+
+      mainProducts.forEach(p => {
         const type = p.type || '未分类';
         if (!groups[type]) groups[type] = [];
         groups[type].push(p);
+        // 把赠品也挂在主品后面，标记为赠品
+        if (giftMap[p.code]) {
+          giftMap[p.code].forEach(g => {
+            g._isGift = true;
+            groups[type].push(g);
+          });
+        }
       });
 
       let html = '';
       for (const [type, items] of Object.entries(groups)) {
+        // 计算主品数量（不含赠品）
+        const mainCount = items.filter(i => !i._isGift).length;
         html += `
           <div class="card">
             <div class="card-header">
               <h3 style="color:var(--primary);font-size:14px;">📁 ${type}</h3>
-              <span style="font-size:12px;color:var(--text-light);">共 ${items.length} 项</span>
+              <span style="font-size:12px;color:var(--text-light);">共 ${mainCount} 个主品${type === '抖音刷券' ? (items.length > mainCount ? `，${items.length - mainCount} 个赠品` : '') : ''}</span>
             </div>
             <div class="card-body" style="padding:0;">
               <div class="table-wrapper">
@@ -77,13 +96,23 @@ const ProductsModule = {
                     </tr>
                   </thead>
                   <tbody>
-                    ${items.map(p => `
-                      <tr onclick="ProductsModule.editProduct('${system}','${p.code}')" style="cursor:pointer;">
-                        <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:12px;">${p.code}</code></td>
-                        <td><strong>${p.name}</strong> ${(!p.type || !p.spec || !p.unit) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}</td>
+                    ${items.map(p => {
+                      const isGift = p._isGift;
+                      return `
+                      <tr onclick="ProductsModule.editProduct('${system}','${p.code}')" style="cursor:pointer;${isGift ? 'background:var(--bg);' : ''}">
+                        <td>
+                          ${isGift ? '<span style="color:var(--text-light);margin-right:4px;">└─ </span>' : ''}
+                          <code style="background:${isGift ? 'transparent' : '#f0f0f0'};padding:2px 6px;border-radius:4px;font-size:12px;">${p.code}</code>
+                          ${isGift ? '<span style="font-size:10px;color:var(--warning);margin-left:4px;">赠品</span>' : ''}
+                        </td>
+                        <td>
+                          ${isGift ? '<span style="color:var(--text-light);">└─ </span>' : ''}
+                          <strong${isGift ? ' style="font-size:12px;color:var(--text-secondary);"' : ''}>${p.name}</strong>
+                          ${(!p.type || !p.spec || !p.unit) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}
+                        </td>
                         <td>${p.spec || '<span style="color:#bbb;">-</span>'}</td>
                         <td>${p.unit || '<span style="color:#bbb;">-</span>'}</td>
-                        <td>${p.type || '<span style="color:#bbb;">-</span>'}</td>
+                        <td>${isGift ? '<span style="font-size:11px;color:var(--text-light);">赠品</span>' : (p.type || '<span style="color:#bbb;">-</span>')}</td>
                         <td>${p.market_price || '<span style="color:#bbb;">-</span>'}</td>
                         <td>
                           <div class="chart-container" id="chart-${system}-${p.code}"></div>
@@ -93,8 +122,8 @@ const ProductsModule = {
                           <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}')">删除</button>
                           <button class="btn btn-sm btn-success" onclick="event.stopPropagation();ProductsModule.setPrice('${system}','${p.code}','${p.name}')">💰 价格</button>
                         </td>
-                      </tr>
-                    `).join('')}
+                      </tr>`;
+                    }).join('')}
                   </tbody>
                 </table>
               </div>
@@ -215,12 +244,108 @@ const ProductsModule = {
     }
 
     try {
-      await API.post(`/api/${system}/products`, { code, name, spec, unit, market_price: marketPrice, type });
+      const result = await API.post(`/api/${system}/products`, { code, name, spec, unit, market_price: marketPrice, type });
       showToast('添加成功！');
+      closeModal();
+
+      // 如果是抖音刷券类型，弹出赠品添加窗口
+      if (type === '抖音刷券') {
+        // 延迟一下等模态框关闭
+        setTimeout(() => {
+          this.showAddGiftForm(system, code, name);
+        }, 300);
+      } else {
+        await this.loadProducts(system);
+      }
+    } catch (e) {
+      showToast('添加失败: ' + e.message);
+    }
+  },
+
+  // ===== 赠品添加表单（抖音刷券类型专用）=====
+  showAddGiftForm(system, mainCode, mainName) {
+    showModal(`添加赠品 - 为主品 "${mainName}" 添加赠品（选填）`);
+
+    const body = document.getElementById('modal-body');
+    body.innerHTML = `
+      <div style="background:var(--primary-light);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;">
+        主品: <strong>${mainName}</strong> (编码: ${mainCode})
+      </div>
+      <form id="add-gift-form" class="form-grid" onsubmit="ProductsModule.submitAddGift('${system}','${mainCode}');return false;">
+        <div class="form-group">
+          <label>赠品编码 <span style="color:var(--danger)">*</span></label>
+          <div class="input-with-btn">
+            <input type="text" id="gift-code" placeholder="输入赠品编码" required />
+            <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('gift-code')">📷</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>赠品名称 <span style="color:var(--danger)">*</span></label>
+          <input type="text" id="gift-name" placeholder="输入赠品名称" required />
+        </div>
+        <div class="form-group">
+          <label>规格</label>
+          <input type="text" id="gift-spec" placeholder="如：500ml / 白色" />
+        </div>
+        <div class="form-group">
+          <label>单位</label>
+          <select id="gift-unit">
+            <option value="">请选择单位</option>
+            ${['个','箱','件','套','kg','g','ml','L','米','包','瓶','盒','只','双','条'].map(u => 
+              `<option value="${u}">${u}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>实时行情</label>
+          <select id="gift-market-price">
+            <option value="">请选择行情类型</option>
+            ${['固定价格','浮动价格','市场价','协议价','无'].map(p => 
+              `<option value="${p}">${p}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);padding:8px 0;">
+          <span style="color:var(--info);">提示:</span> 赠品类型自动设置为主品的类型，无需重复选择
+        </div>
+        <div class="form-actions" style="display:flex;gap:10px;">
+          <button type="submit" class="btn btn-primary btn-lg" style="flex:1;">保存赠品</button>
+          <button type="button" class="btn btn-secondary btn-lg" style="flex:1;" onclick="closeModal();ProductsModule.loadProducts('${system}')">跳过（不添加）</button>
+        </div>
+      </form>
+    `;
+
+    // 聚焦第一个输入框
+    setTimeout(() => document.getElementById('gift-code')?.focus(), 100);
+  },
+
+  async submitAddGift(system, mainCode) {
+    const code = document.getElementById('gift-code').value.trim();
+    const name = document.getElementById('gift-name').value.trim();
+    const spec = document.getElementById('gift-spec').value.trim();
+    const unit = document.getElementById('gift-unit').value;
+    const marketPrice = document.getElementById('gift-market-price').value;
+
+    if (!code || !name) {
+      showToast('请填写赠品编码和名称');
+      return;
+    }
+
+    try {
+      await API.post(`/api/${system}/products`, {
+        code,
+        name,
+        spec,
+        unit,
+        market_price: marketPrice,
+        type: '抖音刷券',
+        gift_of: mainCode  // 关联到主品
+      });
+      showToast('赠品添加成功！');
       closeModal();
       await this.loadProducts(system);
     } catch (e) {
-      showToast('添加失败: ' + e.message);
+      showToast('添加赠品失败: ' + e.message);
     }
   },
 
