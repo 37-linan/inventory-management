@@ -119,6 +119,7 @@ const ProductsModule = {
                               <strong style="font-size:13px;color:#6b7280;font-weight:400;flex-shrink:0;">${p.name}</strong>
                               <span style="font-size:12px;color:#6b7280;flex-shrink:0;">${p.spec || '<span style=\"color:#bbb;\">-</span>'}</span>
                               <span style="font-size:12px;color:#6b7280;flex-shrink:0;">${p.unit || '<span style=\"color:#bbb;\">-</span>'}</span>
+                              <button onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}')" style="background:#fbbc04;color:white;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;flex-shrink:0;font-weight:500;">删除</button>
                             </div>
                           </td>
                         </tr>`;
