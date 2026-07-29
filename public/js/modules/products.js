@@ -244,17 +244,15 @@ const ProductsModule = {
     }
 
     try {
-      const result = await API.post(`/api/${system}/products`, { code, name, spec, unit, market_price: marketPrice, type });
+      await API.post(`/api/${system}/products`, { code, name, spec, unit, market_price: marketPrice, type });
       showToast('添加成功！');
-      closeModal();
 
-      // 如果是抖音刷券类型，弹出赠品添加窗口
       if (type === '抖音刷券') {
-        // 延迟一下等模态框关闭
-        setTimeout(() => {
-          this.showAddGiftForm(system, code, name);
-        }, 300);
+        document.getElementById('modal-title').textContent = `添加赠品 - 为 "${name}" 添加赠品（选填）`;
+        document.getElementById('modal-body').innerHTML = ProductsModule._renderGiftForm(system, code, name);
+        setTimeout(() => document.getElementById('gift-code')?.focus(), 100);
       } else {
+        closeModal();
         await this.loadProducts(system);
       }
     } catch (e) {
@@ -262,61 +260,39 @@ const ProductsModule = {
     }
   },
 
-  // ===== 赠品添加表单（抖音刷券类型专用）=====
+  // 生成赠品表单HTML（可复用）
+  _renderGiftForm(system, mainCode, mainName) {
+    return '<div style="background:var(--primary-light);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;">' +
+      '主品: <strong>' + mainName + '</strong> (编码: ' + mainCode + ')' +
+      '<span style="margin-left:8px;font-size:11px;color:var(--text-secondary);">赠品为选填，不需要可直接关闭</span></div>' +
+      '<form id="add-gift-form" class="form-grid" onsubmit="ProductsModule.submitAddGift(\'' + system + '\',\'' + mainCode + '\');return false;">' +
+      '<div class="form-group"><label>赠品编码 <span style="color:var(--danger)">*</span></label>' +
+      '<div class="input-with-btn"><input type="text" id="gift-code" placeholder="输入赠品编码" required />' +
+      '<button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan(\'gift-code\')">📷</button></div></div>' +
+      '<div class="form-group"><label>赠品名称 <span style="color:var(--danger)">*</span></label>' +
+      '<input type="text" id="gift-name" placeholder="输入赠品名称" required /></div>' +
+      '<div class="form-group"><label>规格</label><input type="text" id="gift-spec" placeholder="如：500ml / 白色" /></div>' +
+      '<div class="form-group"><label>单位</label><select id="gift-unit">' +
+      '<option value="">请选择单位</option>' +
+      ['个','箱','件','套','kg','g','ml','L','米','包','瓶','盒','只','双','条']
+        .map(function(u){return '<option value="'+u+'">'+u+'</option>';}).join('') + '</select></div>' +
+      '<div class="form-group"><label>实时行情</label><select id="gift-market-price">' +
+      '<option value="">请选择行情类型</option>' +
+      ['固定价格','浮动价格','市场价','协议价','无']
+        .map(function(p){return '<option value="'+p+'">'+p+'</option>';}).join('') + '</select></div>' +
+      '<div style="font-size:12px;color:var(--text-secondary);padding:8px 0;">' +
+      '<span style="color:var(--info);">提示:</span> 类型自动设为"抖音刷券"</div>' +
+      '<div class="form-actions" style="display:flex;gap:10px;">' +
+      '<button type="submit" class="btn btn-primary btn-lg" style="flex:1;">保存赠品</button>' +
+      '<button type="button" class="btn btn-secondary btn-lg" style="flex:1;" onclick="closeModal();ProductsModule.loadProducts(\'' + system + '\')">跳过（不添加）</button>' +
+      '</div></form>';
+  },
+
+  // 弹出赠品添加表单
   showAddGiftForm(system, mainCode, mainName) {
-    showModal(`添加赠品 - 为主品 "${mainName}" 添加赠品（选填）`);
-
-    const body = document.getElementById('modal-body');
-    body.innerHTML = `
-      <div style="background:var(--primary-light);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;">
-        主品: <strong>${mainName}</strong> (编码: ${mainCode})
-      </div>
-      <form id="add-gift-form" class="form-grid" onsubmit="ProductsModule.submitAddGift('${system}','${mainCode}');return false;">
-        <div class="form-group">
-          <label>赠品编码 <span style="color:var(--danger)">*</span></label>
-          <div class="input-with-btn">
-            <input type="text" id="gift-code" placeholder="输入赠品编码" required />
-            <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('gift-code')">📷</button>
-          </div>
-        </div>
-        <div class="form-group">
-          <label>赠品名称 <span style="color:var(--danger)">*</span></label>
-          <input type="text" id="gift-name" placeholder="输入赠品名称" required />
-        </div>
-        <div class="form-group">
-          <label>规格</label>
-          <input type="text" id="gift-spec" placeholder="如：500ml / 白色" />
-        </div>
-        <div class="form-group">
-          <label>单位</label>
-          <select id="gift-unit">
-            <option value="">请选择单位</option>
-            ${['个','箱','件','套','kg','g','ml','L','米','包','瓶','盒','只','双','条'].map(u => 
-              `<option value="${u}">${u}</option>`
-            ).join('')}
-          </select>
-        </div>
-        <div class="form-group">
-          <label>实时行情</label>
-          <select id="gift-market-price">
-            <option value="">请选择行情类型</option>
-            ${['固定价格','浮动价格','市场价','协议价','无'].map(p => 
-              `<option value="${p}">${p}</option>`
-            ).join('')}
-          </select>
-        </div>
-        <div style="font-size:12px;color:var(--text-secondary);padding:8px 0;">
-          <span style="color:var(--info);">提示:</span> 赠品类型自动设置为主品的类型，无需重复选择
-        </div>
-        <div class="form-actions" style="display:flex;gap:10px;">
-          <button type="submit" class="btn btn-primary btn-lg" style="flex:1;">保存赠品</button>
-          <button type="button" class="btn btn-secondary btn-lg" style="flex:1;" onclick="closeModal();ProductsModule.loadProducts('${system}')">跳过（不添加）</button>
-        </div>
-      </form>
-    `;
-
-    // 聚焦第一个输入框
-    setTimeout(() => document.getElementById('gift-code')?.focus(), 100);
+    showModal('添加赠品 - 为主品 "' + mainName + '" 添加赠品（选填）');
+    document.getElementById('modal-body').innerHTML = ProductsModule._renderGiftForm(system, mainCode, mainName);
+    setTimeout(function(){ var el = document.getElementById('gift-code'); if(el) el.focus(); }, 100);
   },
 
   async submitAddGift(system, mainCode) {
