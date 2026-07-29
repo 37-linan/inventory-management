@@ -31,15 +31,19 @@ module.exports = function(db) {
     try {
       const { code, name, spec, unit, market_price, type, gift_of } = req.body;
       if (!code || !name) return res.status(400).json({ error: '编码和名称为必填项' });
-      
-      const existing = await db.query('SELECT id FROM main_products WHERE code = ?', [code]);
-      if (existing.rows[0]) return res.status(400).json({ error: '该产品编号已存在' });
+
+      // 同一类型下不能重复编码，但不同类型可以有相同编码
+      const existing = await db.query(
+        'SELECT id FROM main_products WHERE code = ? AND type = ?',
+        [code, type || '']
+      );
+      if (existing.rows[0]) return res.status(400).json({ error: `该产品编号在"${type || '当前'}"类型下已存在` });
 
       const result = await db.query(
         'INSERT INTO main_products (code, name, spec, unit, market_price, type, gift_of) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
         [code, name, spec || '', unit || '', market_price || '', type || '', gift_of || null]
       );
-      
+
       res.json({ success: true, id: result.rows[0].id, gift_of: gift_of || null });
     } catch (e) {
       res.status(500).json({ error: e.message });
