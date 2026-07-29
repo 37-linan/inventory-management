@@ -101,6 +101,7 @@ const ProductsModule = {
                       <th>规格</th>
                       <th>单位</th>
                       <th>类型</th>
+                      <th>套组</th>
                       <th>行情</th>
                       <th>实时行情图</th>
                       <th>操作</th>
@@ -112,13 +113,14 @@ const ProductsModule = {
                       if (isGift) {
                         return `
                         <tr style="cursor:pointer;" onclick="ProductsModule.editProduct('${system}','${p.code}')">
-                          <td colspan="8" style="padding:6px 10px;">
+                          <td colspan="9" style="padding:6px 10px;">
                             <div style="background:linear-gradient(to right, #fff8e1, #fafafa);border-left:3px solid #fbbc04;border-radius:4px;margin:4px 0;padding:8px 14px;display:inline-flex;align-items:center;gap:16px;max-width:100%;">
                               <span style="background:#fbbc04;color:white;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:500;flex-shrink:0;">└ 赠品</span>
                               <code style="background:transparent;padding:2px 6px;font-size:12px;font-weight:500;flex-shrink:0;">${p.code}</code>
                               <strong style="font-size:13px;color:#6b7280;font-weight:400;flex-shrink:0;">${p.name}</strong>
                               <span style="font-size:12px;color:#6b7280;flex-shrink:0;">${p.spec || '<span style=\"color:#bbb;\">-</span>'}</span>
                               <span style="font-size:12px;color:#6b7280;flex-shrink:0;">${p.unit || '<span style=\"color:#bbb;\">-</span>'}</span>
+                              <span style="font-size:12px;color:#9ca3af;flex-shrink:0;">${p.bundle_qty ? '×'+p.bundle_qty : '×1'}</span>
                               <button onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}','${p.type}')" style="background:#fbbc04;color:white;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;flex-shrink:0;font-weight:500;">删除</button>
                             </div>
                           </td>
@@ -136,6 +138,7 @@ const ProductsModule = {
                         <td>${p.spec || '<span style="color:#bbb;">-</span>'}</td>
                         <td>${p.unit || '<span style="color:#bbb;">-</span>'}</td>
                         <td>${p.type || '<span style="color:#bbb;">-</span>'}</td>
+                        <td style="text-align:center;">${p.type === '抖音刷券' ? (p.bundle_qty ? '<span style="color:#fbbc04;font-weight:500;">×'+p.bundle_qty+'</span>' : '<span style="color:#bbb;">×1</span>') : '<span style="color:#bbb;">-</span>'}</td>
                         <td>${p.market_price || '<span style="color:#bbb;">-</span>'}</td>
                         <td>
                           <div class="chart-container" id="chart-${system}-${p.code}"></div>
@@ -231,8 +234,13 @@ const ProductsModule = {
         </div>
         <div class="form-group">
           <label>类型</label>
-          <select id="product-type"></select>
+          <select id="product-type" onchange="ProductsModule._onTypeChange()"></select>
           <div style="margin-top:4px;"><button type="button" class="btn btn-sm btn-secondary" onclick="ProductsModule.showAddTypeOption('${system}')">+ 管理类型选项</button></div>
+        </div>
+        <div class="form-group" id="bundle-qty-group" style="display:none;">
+          <label>套组数量 <span style="color:var(--info);">(抖音券专用)</span></label>
+          <input type="number" id="product-bundle-qty" value="1" min="1" max="999" />
+          <div style="font-size:11px;color:var(--text-light);margin-top:4px;">入库 × 套组数量 = 实际库存</div>
         </div>
         <div class="form-actions">
           <button type="submit" class="btn btn-primary btn-lg">保存</button>
@@ -253,6 +261,14 @@ const ProductsModule = {
       options.map(o => `<option value="${o}">${o}</option>`).join('');
   },
 
+  _onTypeChange() {
+    const type = document.getElementById('product-type')?.value;
+    const group = document.getElementById('bundle-qty-group');
+    if (group) {
+      group.style.display = type === '抖音刷券' ? 'block' : 'none';
+    }
+  },
+
   async submitAdd(system) {
     const code = document.getElementById('product-code').value.trim();
     const name = document.getElementById('product-name').value.trim();
@@ -260,6 +276,7 @@ const ProductsModule = {
     const unit = document.getElementById('product-unit').value;
     const marketPrice = document.getElementById('product-market-price').value;
     const type = document.getElementById('product-type').value;
+    const bundleQty = type === '抖音刷券' ? parseInt(document.getElementById('product-bundle-qty')?.value) || 1 : 1;
 
     if (!code || !name) {
       showToast('请填写物品编码和名称');
@@ -267,7 +284,9 @@ const ProductsModule = {
     }
 
     try {
-      await API.post(`/api/${system}/products`, { code, name, spec, unit, market_price: marketPrice, type });
+      const body = { code, name, spec, unit, market_price: marketPrice, type };
+      if (type === '抖音刷券') body.bundle_qty = bundleQty;
+      await API.post(`/api/${system}/products`, body);
       showToast('添加成功！');
 
       if (type === '抖音刷券') {
@@ -338,7 +357,8 @@ const ProductsModule = {
         unit,
         market_price: marketPrice,
         type: '抖音刷券',
-        gift_of: mainCode  // 关联到主品
+        gift_of: mainCode,
+        bundle_qty: 1  // 赠品默认套组数量为1
       });
       showToast('赠品添加成功！');
       closeModal();
