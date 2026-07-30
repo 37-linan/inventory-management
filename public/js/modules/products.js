@@ -29,9 +29,11 @@ const ProductsModule = {
   async loadProducts(system) {
     try {
       const products = await API.get(`/api/${system}/products`);
+      // 类型分离：主系统只显示屈臣氏，抖音刷券系统只显示抖音刷券
+      const filtered = system === 'main' ? products.filter(p => p.type !== '抖音刷券') : products.filter(p => p.type === '抖音刷券');
       const container = document.getElementById(`products-list-${system}`);
       
-      if (products.length === 0) {
+      if (filtered.length === 0) {
         container.innerHTML = `
           <div class="card">
             <div class="card-body">
@@ -48,8 +50,8 @@ const ProductsModule = {
       // 按类型分组
       const groups = {};
       // 分离主品和赠品
-      const mainProducts = products.filter(p => !p.gift_of);
-      const gifts = products.filter(p => p.gift_of);
+      const mainProducts = filtered.filter(p => !p.gift_of);
+      const gifts = filtered.filter(p => p.gift_of);
       // 按主品编码建立赠品索引
       const giftMap = {};
       gifts.forEach(g => {
