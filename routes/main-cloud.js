@@ -32,13 +32,7 @@ module.exports = function(db) {
       const { code, name, spec, unit, market_price, type, gift_of } = req.body;
       if (!code || !name) return res.status(400).json({ error: '编码和名称为必填项' });
 
-      // 同一类型下不能重复编码，但不同类型可以有相同编码
-      const existing = await db.query(
-        'SELECT id FROM main_products WHERE code = ? AND type = ?',
-        [code, type || '']
-      );
-      if (existing.rows[0]) return res.status(400).json({ error: `该产品编号在"${type || '当前'}"类型下已存在` });
-
+      // 不做重复检查，同一个编码可在不同类型和不同套餐中重复出现
       const result = await db.query(
         'INSERT INTO main_products (code, name, spec, unit, market_price, type, gift_of) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
         [code, name, spec || '', unit || '', market_price || '', type || '', gift_of || null]
@@ -77,7 +71,13 @@ module.exports = function(db) {
 
   router.delete('/products/:code', async (req, res) => {
     try {
-      await db.query('DELETE FROM main_products WHERE code = ?', [req.params.code]);
+      // 支持按 type 过滤删除（同一个编码在不同类型下视为不同产品）
+      if (req.query.type) {
+        await db.query('DELETE FROM main_products WHERE code = ? AND type = ?', [req.params.code, req.query.type]);
+      } else {
+        // 没有传 type 时只删一条（随机留一条，避免误删）
+        await db.query('DELETE FROM main_products WHERE id = (SELECT id FROM main_products WHERE code = ? LIMIT 1)', [req.params.code]);
+      }
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -248,11 +248,15 @@ module.exports = function(db) {
         const outbound = outboundSummary.rows.find(o => o.product_code === p.code);
         const totalIn = inbound ? Number(inbound.total_in) : 0;
         const totalOut = outbound ? Number(outbound.total_out) : 0;
+        const bundleQty = parseInt(p.bundle_qty) || 1;
+        const stock = totalIn - totalOut;
         return {
           ...p,
+          bundle_qty: bundleQty,
           total_in: totalIn,
           total_out: totalOut,
-          stock: totalIn - totalOut
+          stock: stock,
+          actual_stock: p.type === '抖音刷券' ? stock * bundleQty : stock
         };
       });
 
@@ -308,6 +312,7 @@ module.exports = function(db) {
     try {
       const inbound = await db.query(`
         SELECT i.*, p.name as product_name, p.spec as product_spec, p.unit as product_unit,
+               p.type as product_type, p.bundle_qty,
                '入库' as type, i.created_at as record_time
         FROM main_inbound i 
         LEFT JOIN main_products p ON i.product_code = p.code 
@@ -316,6 +321,7 @@ module.exports = function(db) {
 
       const outbound = await db.query(`
         SELECT o.*, p.name as product_name, p.spec as product_spec, p.unit as product_unit,
+               p.type as product_type, p.bundle_qty,
                '出库' as type, o.created_at as record_time
         FROM main_outbound o 
         LEFT JOIN main_products p ON o.product_code = p.code 
