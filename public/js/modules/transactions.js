@@ -485,6 +485,14 @@ const TransactionsModule = {
         const data = await API.get(`/api/${system}/ledger`);
         inbound = data.inbound;
         outbound = data.outbound;
+        // 类型分离：主系统只留屈臣氏，抖音刷券只留抖音刷券
+        if (system === 'main') {
+          inbound = inbound.filter(r => r.product_type !== '抖音刷券');
+          outbound = outbound.filter(r => r.product_type !== '抖音刷券');
+        } else {
+          inbound = inbound.filter(r => r.product_type === '抖音刷券' || !r.product_type);
+          outbound = outbound.filter(r => r.product_type === '抖音刷券' || !r.product_type);
+        }
         this._ledgerData = { inbound, outbound };
         this._ledgerSystem = system;
       }
@@ -569,6 +577,7 @@ const TransactionsModule = {
                       <th>物品编码</th>
                       <th>物品名称</th>
                       <th>规格</th>
+                      <th>套组倍数</th>
                       <th>登记数量</th>
                       <th>地点</th>
                       <th>售价</th>
@@ -583,12 +592,15 @@ const TransactionsModule = {
                       const profitClass = profit > 0 ? 'var(--success)' : profit < 0 ? 'var(--danger)' : 'var(--text-light)';
                       const bgColor = r.row_color || '';
                       const sys = TransactionsModule.currentSystem;
+                      const bq = parseInt(r.bundle_qty) || 1;
+                      const showBq = r.product_type === '抖音刷券' || !r.product_type;
                       return `<tr class="${bgColor ? 'row-color' : ''}" ${bgColor ? "style='--row-bg:" + bgColor + ";--row-bg-hover:" + bgColor + "'" : ''}>
                       <td>${TransactionsModule._renderColorCell(r.id, 'outbound', r.row_color)}</td>
                       <td style="white-space:nowrap;font-size:12px;">${r.created_at}</td>
                       <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
                       <td>${r.product_name || '-'}</td>
                       <td>${r.product_spec || '-'}</td>
+                      <td style="text-align:center;">${showBq && bq > 1 ? '<span style="color:#fbbc04;font-weight:500;">×' + bq + '</span>' : '<span style="color:#bbb;">-</span>'}</td>
                       <td><strong style="color:var(--danger);">-${r.quantity}</strong></td>
                       <td>${r.location || '-'}</td>
                       <td>${r.sale_price ? '¥' + r.sale_price : '-'}</td>
@@ -733,6 +745,7 @@ const TransactionsModule = {
                 <th>物品编码</th>
                 <th>物品名称</th>
                 <th>规格</th>
+                <th>套组倍数</th>
                 <th>登记数量</th>
                 ${isInbound ? '<th>渠道</th><th>价格</th>' : '<th>地点</th>'}
                 <th>操作</th>
@@ -744,12 +757,15 @@ const TransactionsModule = {
     for (const r of group.items) {
       const bgColor = r.row_color || '';
       const sys = TransactionsModule.currentSystem;
+      const bq = parseInt(r.bundle_qty) || 1;
+      const showBq = r.product_type === '抖音刷券' || !r.product_type;
       html += `<tr class="${bgColor ? 'row-color' : ''}" ${bgColor ? "style='--row-bg:" + bgColor + ";--row-bg-hover:" + bgColor + "'" : ''}>
         <td>${this._renderColorCell(r.id, isInbound ? 'inbound' : 'outbound', r.row_color)}</td>
         <td style="white-space:nowrap;font-size:12px;">${r.created_at}</td>
         <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
         <td>${r.product_name || '-'}</td>
         <td>${r.product_spec || '-'}</td>
+        <td style="text-align:center;">${showBq && bq > 1 ? '<span style="color:#fbbc04;font-weight:500;">×' + bq + '</span>' : '<span style="color:#bbb;">-</span>'}</td>
         <td><strong style="color:${isInbound ? 'var(--success)' : 'var(--danger)'};">${isInbound ? '+' : '-'}${r.quantity}</strong></td>
         ${isInbound ? `<td>${r.channel || '-'}</td><td>${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>` : `<td>${r.location || '-'}</td>`}
         <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule._deleteLedgerRecord('${sys}','${isInbound ? 'inbound' : 'outbound'}',${r.id})">删除</button></td>
