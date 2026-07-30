@@ -261,16 +261,20 @@ module.exports = function(db) {
       });
 
       const recentInbound = await db.query(`
-        SELECT i.*, p.name as product_name, p.spec as product_spec, p.unit as product_unit
+        SELECT i.*,
+               (SELECT name FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as product_name,
+               (SELECT spec FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as product_spec,
+               (SELECT unit FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as product_unit
         FROM main_inbound i 
-        LEFT JOIN main_products p ON i.product_code = p.code 
         ORDER BY i.created_at DESC LIMIT 20
       `);
 
       const recentOutbound = await db.query(`
-        SELECT o.*, p.name as product_name, p.spec as product_spec, p.unit as product_unit
+        SELECT o.*,
+               (SELECT name FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_name,
+               (SELECT spec FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_spec,
+               (SELECT unit FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_unit
         FROM main_outbound o 
-        LEFT JOIN main_products p ON o.product_code = p.code 
         ORDER BY o.created_at DESC LIMIT 20
       `);
 
@@ -310,21 +314,28 @@ module.exports = function(db) {
 
   router.get('/ledger', async (req, res) => {
     try {
+      // 用 DISTINCT ON 取每个 code 唯一一条产品（最新创建的那条），避免同 code 多产品错配
       const inbound = await db.query(`
-        SELECT i.*, p.name as product_name, p.spec as product_spec, p.unit as product_unit,
-               p.type as product_type, p.bundle_qty,
+        SELECT i.*,
+               (SELECT name FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as product_name,
+               (SELECT spec FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as product_spec,
+               (SELECT unit FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as product_unit,
+               (SELECT type FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as product_type,
+               (SELECT bundle_qty FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as bundle_qty,
                '入库' as type, i.created_at as record_time
         FROM main_inbound i 
-        LEFT JOIN main_products p ON i.product_code = p.code 
         ORDER BY i.created_at DESC
       `);
 
       const outbound = await db.query(`
-        SELECT o.*, p.name as product_name, p.spec as product_spec, p.unit as product_unit,
-               p.type as product_type, p.bundle_qty,
+        SELECT o.*,
+               (SELECT name FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_name,
+               (SELECT spec FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_spec,
+               (SELECT unit FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_unit,
+               (SELECT type FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_type,
+               (SELECT bundle_qty FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as bundle_qty,
                '出库' as type, o.created_at as record_time
         FROM main_outbound o 
-        LEFT JOIN main_products p ON o.product_code = p.code 
         ORDER BY o.created_at DESC
       `);
 
