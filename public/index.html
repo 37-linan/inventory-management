@@ -22,9 +22,24 @@
   <script src="/js/app.js"></script>
 </head>
 <body>
+  <!-- 访问密码登录层 -->
+  <div id="login-overlay" style="display:none;">
+    <div class="login-box">
+      <div class="login-logo">📦</div>
+      <h2>库存管理工作台</h2>
+      <p class="login-tip">请输入访问密码</p>
+      <input type="password" id="login-password" placeholder="访问密码" autocomplete="off" />
+      <button class="login-btn" onclick="checkLogin()">进入系统</button>
+      <p id="login-error" class="login-error" style="display:none;">密码错误，请重新输入</p>
+    </div>
+  </div>
+
   <div id="app">
     <!-- 移动端菜单按钮（固定在左上角） -->
     <button id="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+
+    <!-- 移动端返回首页按钮 -->
+    <button id="mobile-back-btn" onclick="navigateTo('home')" style="display:none;">🏠</button>
 
     <!-- 左侧导航 -->
     <aside id="sidebar">
@@ -49,22 +64,6 @@
             <span class="nav-text">主库存看板</span>
           </a>
         </div>
-        <div class="nav-divider"></div>
-        <div class="nav-group" id="douyin-nav-group" style="display:none;">
-          <div class="nav-group-title">抖音刷券系统 <span style="font-size:11px;color:rgba(255,255,255,0.4);">（未启用）</span></div>
-          <a class="nav-item" data-page="douyin-products" onclick="navigateTo('douyin-products')">
-            <span class="nav-icon">🎫</span>
-            <span class="nav-text">抖音刷券产品信息表</span>
-          </a>
-          <a class="nav-item" data-page="douyin-ledger" onclick="navigateTo('douyin-ledger')">
-            <span class="nav-icon">📊</span>
-            <span class="nav-text">抖音刷券出入库登记</span>
-          </a>
-          <a class="nav-item" data-page="douyin-inventory" onclick="navigateTo('douyin-inventory')">
-            <span class="nav-icon">📈</span>
-            <span class="nav-text">抖音刷券库存看板</span>
-          </a>
-        </div>
       </nav>
     </aside>
 
@@ -73,12 +72,10 @@
 
     <!-- 主内容区 -->
     <main id="main-content">
+      <div class="page-container" id="page-home" style="display:none"></div>
       <div class="page-container" id="page-main-products"></div>
       <div class="page-container" id="page-main-ledger" style="display:none"></div>
       <div class="page-container" id="page-main-inventory" style="display:none"></div>
-      <div class="page-container" id="page-douyin-products" style="display:none"></div>
-      <div class="page-container" id="page-douyin-ledger" style="display:none"></div>
-      <div class="page-container" id="page-douyin-inventory" style="display:none"></div>
     </main>
   </div>
 
@@ -95,5 +92,16 @@
 
   <!-- Toast提示 -->
   <div id="toast" class="toast"></div>
+
+  <!-- 底部备案号 -->
+  <footer style="text-align:center;padding:14px 12px;font-size:12px;color:var(--text-light, #999);background:var(--bg, #f8f9fa);border-top:1px solid var(--border, #e0e0e0);line-height:1.7;">
+    <div>
+      <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" style="color:var(--text-secondary, #666);text-decoration:none;margin:0 6px;">粤ICP备2026122814号-1</a>
+    </div>
+    <div>
+      <img src="/icons/gongan.png" alt="公安备案" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;" onerror="this.style.display='none'" />
+      <a href="https://beian.mps.gov.cn/" target="_blank" rel="noopener" style="color:var(--text-secondary, #666);text-decoration:none;">粤公网安备 44140302000277号</a>
+    </div>
+  </footer>
 </body>
 </html>

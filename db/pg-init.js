@@ -4,15 +4,17 @@
  */
 
 const mainSchema = `
-  -- 产品信息表
+  -- 产品信息表（编码不作唯一约束，相同编码可在不同套餐中重复）
   CREATE TABLE IF NOT EXISTS main_products (
     id SERIAL PRIMARY KEY,
-    code VARCHAR(100) UNIQUE NOT NULL,
+    code VARCHAR(100) NOT NULL,
     name VARCHAR(200) NOT NULL,
     spec TEXT DEFAULT '',
     unit VARCHAR(50) DEFAULT '',
     market_price TEXT DEFAULT '',
     type VARCHAR(100) DEFAULT '',
+    gift_of VARCHAR(100) DEFAULT NULL,
+    bundle_qty INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
@@ -59,15 +61,6 @@ const mainSchema = `
     config_key VARCHAR(100) UNIQUE NOT NULL,
     config_value TEXT DEFAULT ''
   );
-
-  -- 初始化默认配置
-  INSERT INTO main_config (config_key, config_value) 
-  SELECT 'product_types', '["电子设备","办公用品","耗材","其他"]'
-  WHERE NOT EXISTS (SELECT 1 FROM main_config WHERE config_key = 'product_types');
-
-  INSERT INTO main_config (config_key, config_value) 
-  SELECT 'channel_options', '["淘宝","京东","拼多多","抖音","线下采购"]'
-  WHERE NOT EXISTS (SELECT 1 FROM main_config WHERE config_key = 'channel_options');
 `;
 
 const douyinSchema = `
@@ -80,6 +73,8 @@ const douyinSchema = `
     unit VARCHAR(50) DEFAULT '',
     market_price TEXT DEFAULT '',
     type VARCHAR(100) DEFAULT '',
+    gift_of VARCHAR(100) DEFAULT NULL,
+    bundle_qty INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );
@@ -124,16 +119,49 @@ const douyinSchema = `
     config_key VARCHAR(100) UNIQUE NOT NULL,
     config_value TEXT DEFAULT ''
   );
-
-  -- 初始化默认配置
-  INSERT INTO douyin_config (config_key, config_value) 
-  SELECT 'product_types', '["抖音券","优惠券","代金券","其他"]'
-  WHERE NOT EXISTS (SELECT 1 FROM douyin_config WHERE config_key = 'product_types');
-
-  INSERT INTO douyin_config (config_key, config_value) 
-  SELECT 'channel_options', '["抖音直播","抖音小店","抖音橱窗","线下"]'
-  WHERE NOT EXISTS (SELECT 1 FROM douyin_config WHERE config_key = 'channel_options');
 `;
+
+const migrationSQL = `
+  -- 添加 gift_of 字段（兼容已有数据库）
+  ALTER TABLE main_products ADD COLUMN IF NOT EXISTS gift_of VARCHAR(100) DEFAULT NULL;
+  ALTER TABLE douyin_products ADD COLUMN IF NOT EXISTS gift_of VARCHAR(100) DEFAULT NULL;
+  -- 移除编码唯一约束（允许相同编码在不同套餐中出现）
+  ALTER TABLE main_products DROP CONSTRAINT IF EXISTS main_products_code_key;
+  ALTER TABLE douyin_products DROP CONSTRAINT IF EXISTS douyin_products_code_key;
+  -- 添加套组数量字段（抖音刷券专用，默认1）
+  ALTER TABLE main_products ADD COLUMN IF NOT EXISTS bundle_qty INTEGER DEFAULT 1;
+  ALTER TABLE douyin_products ADD COLUMN IF NOT EXISTS bundle_qty INTEGER DEFAULT 1;
+`;
+
+/**
+ * 仅在配置表为空时初始化默认配置
+ * 用户已自定义过的配置不会被覆盖
+ */
+async function seedDefaultConfig(pgDb) {
+  try {
+    // 主系统 - 检查是否已有配置
+    const mainCount = await pgDb.query('SELECT COUNT(*) as c FROM main_config');
+    if (parseInt(mainCount.rows[0].c) === 0) {
+      await pgDb.query(`INSERT INTO main_config (config_key, config_value) VALUES ('product_types', '["抖音刷券","屈臣氏"]')`);
+      await pgDb.query(`INSERT INTO main_config (config_key, config_value) VALUES ('channel_options', '["淘宝","京东","拼多多","抖音","线下采购"]')`);
+      console.log('[pg-init] 主系统默认配置已初始化');
+    } else {
+      console.log('[pg-init] 主系统配置已有数据，跳过初始化');
+    }
+
+    // 抖音系统 - 检查是否已有配置
+    const dyCount = await pgDb.query('SELECT COUNT(*) as c FROM douyin_config');
+    if (parseInt(dyCount.rows[0].c) === 0) {
+      await pgDb.query(`INSERT INTO douyin_config (config_key, config_value) VALUES ('product_types', '["抖音券","优惠券","代金券","其他"]')`);
+      await pgDb.query(`INSERT INTO douyin_config (config_key, config_value) VALUES ('channel_options', '["抖音直播","抖音小店","抖音橱窗","线下"]')`);
+      console.log('[pg-init] 抖音系统默认配置已初始化');
+    } else {
+      console.log('[pg-init] 抖音系统配置已有数据，跳过初始化');
+    }
+  } catch(e) {
+    console.log('[pg-init] 配置初始化跳过:', e.message);
+  }
+}
 
 async function initPgDatabase(pgDb) {
   // 执行主系统表创建
@@ -143,6 +171,17 @@ async function initPgDatabase(pgDb) {
   // 执行抖音系统表创建
   await pgDb.query(douyinSchema);
   console.log('[pg-init] 抖音系统表结构已创建');
+
+  // 执行迁移（已有数据库加字段）
+  try {
+    await pgDb.query(migrationSQL);
+    console.log('[pg-init] 迁移已执行（gift_of 字段）');
+  } catch(e) {
+    console.log('[pg-init] 迁移跳过:', e.message);
+  }
+
+  // 仅在首次部署时初始化默认配置
+  await seedDefaultConfig(pgDb);
 }
 
 module.exports = { initPgDatabase };

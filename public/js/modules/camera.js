@@ -170,9 +170,25 @@ const CameraCapture = {
 // 照片预览弹窗
 function showImagePreview(path) {
   showModal('图片预览');
+  const filename = (path.split('/').pop() || 'image').replace(/[\\/:*?"<>|]/g, '_') || 'image.jpg';
   document.getElementById('modal-body').innerHTML = `
     <div style="text-align:center;">
+      <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;">
+        <button class="btn btn-sm btn-secondary" onclick="saveImageAs('${path.replace(/'/g, "\\'")}','${filename.replace(/'/g, "\\'")}')">💾 保存图片</button>
+      </div>
       <img src="${path}" style="max-width:100%;max-height:70vh;border-radius:8px;" />
     </div>
   `;
+}
+
+// 保存图片到本地
+function saveImageAs(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.target = '_blank';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast('已保存：' + filename);
 }

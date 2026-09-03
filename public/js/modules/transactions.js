@@ -109,6 +109,22 @@ const TransactionsModule = {
     else if (tab === 'ledger') this.renderLedgerTab(system);
   },
 
+  // 数量显示：整数不带小数（1.00 → 1），真小数保留（1.50 → 1.5）
+  _fmtQty(n) {
+    const v = parseFloat(n);
+    if (isNaN(v)) return n || '';
+    return String(v);
+  },
+
+  // 日期格式化：ISO 时间 → YYYY-MM-DD HH:mm:ss（本地时区）
+  _fmtDateTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  },
+
   // ================================================================
   //  标签页1：入库登记单（表单 + 入库记录表）
   // ================================================================
@@ -123,6 +139,13 @@ const TransactionsModule = {
         </div>
         <div class="card-body">
           <form id="inbound-form" class="form-grid" onsubmit="TransactionsModule.submitInbound('${system}');return false;">
+            <div class="form-group">
+              <label>订单号/快递单号 <span style="color:var(--danger)">*</span> <span style="color:var(--text-light);font-size:11px;">(一单多品时后续自动沿用)</span></label>
+              <div class="input-with-btn">
+                <input type="text" id="inbound-order" placeholder="订单号或快递单号" required />
+                <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('inbound-order')">扫码</button>
+              </div>
+            </div>
             <div class="form-group">
               <label>物品编码 <span style="color:var(--danger)">*</span></label>
               <div class="input-with-btn">
@@ -146,14 +169,7 @@ const TransactionsModule = {
               </div>
             </div>
             <div class="form-group">
-              <label>订单号/快递单号</label>
-              <div class="input-with-btn">
-                <input type="text" id="inbound-order" placeholder="订单号或快递单号" />
-                <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('inbound-order')">扫码</button>
-              </div>
-            </div>
-            <div class="form-group">
-              <label>购买价格</label>
+              <label>整单金额 <span style="color:var(--text-light);font-size:11px;">(仅本单首个商品填写整单总金额)</span></label>
               <input type="number" id="inbound-price" placeholder="0.00" step="0.01" min="0" />
             </div>
             <div class="form-group">
@@ -216,32 +232,300 @@ const TransactionsModule = {
     try {
       const records = await API.get(`/api/${system}/inbound`);
       const products = await API.get(`/api/${system}/products`);
-      if (label) label.textContent = `共 ${records.length} 条记录`;
+
+      // 按订单号分组
+      const groups = {};
+      records.forEach(r => {
+        const key = r.order_no || '（无单号）';
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(r);
+      });
+      // 组内按时间倒序：最新入库的在上，先入库的在下
+      Object.values(groups).forEach(items => {
+        items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      });
+      // 缓存统计用
+      this._groupStatsCache = {};
+      // 组按最新时间倒序（最新单号在上）
+      const sortedKeys = Object.keys(groups).sort((a, b) => {
+        const ta = new Date(groups[a][0].created_at).getTime();
+        const tb = new Date(groups[b][0].created_at).getTime();
+        return tb - ta;
+      });
+      const groupCount = sortedKeys.length;
+      if (label) label.textContent = `共 ${records.length} 条记录 / ${groupCount} 个单号`;
 
       if (records.length === 0) {
         tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-light);padding:20px;">暂无入库记录</td></tr>';
         return;
       }
 
-      tbody.innerHTML = records.map(r => {
-        const p = products.find(x => x.code === r.product_code);
-        const bgColor = r.row_color || '';
-        return `<tr class="${bgColor ? 'row-color' : ''}" ${bgColor ? "style='--row-bg:" + bgColor + ";--row-bg-hover:" + bgColor + "'" : ''}>
-          <td>${this._renderColorCell(r.id, 'inbound', r.row_color)}</td>
-          <td style="white-space:nowrap;font-size:12px;">${r.created_at}</td>
-          <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
-          <td>${p ? p.name : '-'}</td>
-          <td>${p ? (p.spec || '-') : '-'}</td>
-          <td><strong style="color:var(--success);">+${r.quantity}</strong></td>
-          <td><span class="badge badge-inbound">${r.channel || '-'}</span></td>
-          <td>${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>
-          <td>${r.image_path ? `<div class="image-preview" onclick="showImagePreview('${r.image_path}')"><img src="${r.image_path}" /></div>` : '-'}</td>
-          <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteInbound('${system}',${r.id})">删除</button></td>
+      let html = '';
+      sortedKeys.forEach((orderNo, gi) => {
+        const items = groups[orderNo];
+        const totalQty = items.reduce((s, r) => s + parseFloat(r.quantity || 0), 0);
+        // 整单总金额 = 本单第一个商品填的金额（用户约定：整单金额填在第一个商品上，不乘数量）
+        const firstItem = [...items].sort((a, b) => a.id - b.id)[0];
+        const orderTotal = parseFloat(firstItem.purchase_price || 0);
+        const firstTime = items[0].created_at;
+        const groupColor = items[0].row_color || '';
+        const groupId = `inb-grp-${gi}`;
+        const cacheKey = `g${gi}`;
+        this._groupStatsCache[cacheKey] = items;
+
+        // 组头行：跨整行，显示订单号 + 汇总信息
+        html += `<tr class="group-header" style="cursor:pointer;background:${groupColor || '#eef2f7'};font-weight:600;" onclick="TransactionsModule._toggleGroupRows('${groupId}','${cacheKey}')">
+          <td colspan="10" style="padding:8px 12px;border-top:2px solid ${groupColor || 'transparent'};">
+            <span style="display:inline-block;width:14px;text-align:center;" id="${groupId}-icon">▾</span>
+            <span style="color:var(--primary);">📦 ${orderNo}</span>
+            <span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">${firstTime}</span>
+            <span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">商品 ${items.length} 种 · 总数量 ${this._fmtQty(totalQty)}</span>
+            ${orderTotal > 0 ? `<span style="color:var(--success);margin-left:12px;font-size:12px;font-weight:normal;">整单金额 ¥${orderTotal.toFixed(2)}</span>` : ''}
+            <button class="btn btn-sm btn-secondary" style="float:right;margin-left:6px;" onclick="event.stopPropagation();TransactionsModule._showGroupStats('${cacheKey}','${orderNo.replace(/'/g, "\\'")}')">📊 统计</button>
+            <button class="btn btn-sm btn-danger" style="float:right;" onclick="event.stopPropagation();TransactionsModule._deleteGroup('${cacheKey}','${orderNo.replace(/'/g, "\\'")}')">删除整单</button>
+          </td>
         </tr>`;
-      }).join('');
+
+        // 明细行
+        items.forEach(r => {
+          const p = products.find(x => x.code === r.product_code);
+          html += `<tr class="${groupId}-rows ${groupColor ? 'row-color' : ''}" ${groupColor ? "style='--row-bg:" + groupColor + ";--row-bg-hover:" + groupColor + "'" : ''}>
+            <td>${this._renderColorCell(r.id, 'inbound', r.row_color)}</td>
+            <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
+            <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
+            <td>${p ? p.name : '-'}</td>
+            <td>${p ? (p.spec || '-') : '-'}</td>
+            <td><strong style="color:var(--success);">+${this._fmtQty(r.quantity)}</strong></td>
+            <td><span class="badge badge-inbound">${r.channel || '-'}</span></td>
+            <td>${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>
+            <td>${r.image_path ? `<div class="image-preview" onclick="showImagePreview('${r.image_path}')"><img src="${r.image_path}" /></div>` : '-'}</td>
+            <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteInbound('${system}',${r.id})">删除</button></td>
+          </tr>`;
+        });
+      });
+
+      tbody.innerHTML = html;
     } catch (e) {
       tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--danger);padding:20px;">加载失败: ${e.message}</td></tr>`;
     }
+  },
+
+  // 折叠/展开单号组
+  _toggleGroupRows(groupId, cacheKey) {
+    const icon = document.getElementById(groupId + '-icon');
+    const rows = document.querySelectorAll('.' + groupId + '-rows');
+    const collapsed = icon.textContent.trim() === '▸';
+    rows.forEach(r => r.style.display = collapsed ? '' : 'none');
+    icon.textContent = collapsed ? '▾' : '▸';
+  },
+
+  // 单号统计弹窗
+  _showGroupStats(cacheKey, orderNo) {
+    const items = this._groupStatsCache[cacheKey] || [];
+    if (items.length === 0) { showToast('无数据'); return; }
+    const totalQty = items.reduce((s, r) => s + parseFloat(r.quantity || 0), 0);
+    // 整单总金额 = 本单第一个商品（id最小）填的金额，不乘数量
+    const firstItem = [...items].sort((a, b) => a.id - b.id)[0];
+    const orderTotal = parseFloat(firstItem.purchase_price || 0);
+
+    // 按渠道汇总（数量按每条算；金额只在第一个商品所在渠道计整单金额）
+    const byChannel = {};
+    items.forEach(r => {
+      const ch = r.channel || '未填';
+      if (!byChannel[ch]) byChannel[ch] = { qty: 0, amt: 0, count: 0, isFirst: false };
+      byChannel[ch].qty += parseFloat(r.quantity || 0);
+      byChannel[ch].count++;
+      if (r.id === firstItem.id) byChannel[ch].isFirst = true;
+    });
+    Object.values(byChannel).forEach(v => { if (v.isFirst) v.amt = orderTotal; });
+
+    showModal('📊 单号统计');
+    document.getElementById('modal-body').innerHTML = `
+      <div style="padding:4px 0 12px;">
+        <div style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;display:flex;gap:12px;align-items:flex-start;">
+          <div style="flex:1;">
+            <div style="font-size:12px;color:var(--text-secondary);">订单号</div>
+            <div style="font-size:15px;font-weight:600;color:var(--primary);margin-top:4px;">${orderNo}</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">${this._fmtDateTime(items[0].created_at)}</div>
+            ${(() => {
+              const devices = [...new Set(items.map(r => (r.device || '').trim()).filter(Boolean))];
+              if (devices.length === 0) return '';
+              return `
+              <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
+                <div style="font-size:12px;color:var(--text-secondary);">下单设备/下级</div>
+                <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-top:4px;">${devices.join('、')}</div>
+              </div>`;
+            })()}
+          </div>
+          <div id="order-profit-box" style="min-width:130px;background:rgba(52,168,83,0.08);border:1px solid rgba(52,168,83,0.2);border-radius:8px;padding:10px 12px;text-align:center;cursor:pointer;" onclick="TransactionsModule._showOrderProfitDetail(this.dataset.orderNo)" data-order-no="${orderNo}" title="点击查看单利润计算过程">
+            <div style="font-size:11px;color:var(--text-secondary);">单利润  ⓘ</div>
+            <div id="order-profit-value" style="font-size:20px;font-weight:600;color:var(--success);margin-top:4px;">计算中...</div>
+            <div id="order-profit-detail" style="font-size:10px;color:var(--text-secondary);margin-top:4px;line-height:1.4;"></div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+          <div style="background:var(--bg);padding:10px;border-radius:6px;text-align:center;">
+            <div style="font-size:11px;color:var(--text-secondary);">商品种数</div>
+            <div style="font-size:20px;font-weight:600;color:var(--primary);">${items.length}</div>
+          </div>
+          <div style="background:var(--bg);padding:10px;border-radius:6px;text-align:center;">
+            <div style="font-size:11px;color:var(--text-secondary);">总数量</div>
+            <div style="font-size:20px;font-weight:600;color:var(--success);">${this._fmtQty(totalQty)}</div>
+          </div>
+          ${orderTotal > 0 ? `<div style="background:var(--bg);padding:10px;border-radius:6px;text-align:center;grid-column:span 2;">
+            <div style="font-size:11px;color:var(--text-secondary);">整单金额（首个商品填写）</div>
+            <div style="font-size:22px;font-weight:600;color:var(--success);">¥${orderTotal.toFixed(2)}</div>
+          </div>` : ''}
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">按渠道汇总：</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          ${Object.entries(byChannel).map(([ch, v]) => `
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:6px;">${ch}</td>
+              <td style="text-align:right;padding:6px;">${v.count} 种</td>
+              <td style="text-align:right;padding:6px;">${this._fmtQty(v.qty)}</td>
+              <td style="text-align:right;padding:6px;color:var(--success);">${v.amt > 0 ? '¥' + v.amt.toFixed(2) : '-'}</td>
+            </tr>
+          `).join('')}
+        </table>
+      </div>
+    `;
+
+    // 异步加载单利润（成本=整单金额始终显示；有出库才计销售额）
+    API.get(`/api/main/order-profit?orderNo=${encodeURIComponent(orderNo)}`).then(res => {
+      const valEl = document.getElementById('order-profit-value');
+      const detEl = document.getElementById('order-profit-detail');
+      const boxEl = document.getElementById('order-profit-box');
+      if (!valEl) return;
+      const cost = parseFloat(res.cost_price) || 0;
+
+      // 还没出库：只显示成本，利润待出库
+      if (!res.has_out) {
+        valEl.style.color = 'var(--text-secondary)';
+        valEl.textContent = '待出库';
+        detEl.innerHTML = `成本 ¥${cost.toFixed(2)}<br>销售 待出库`;
+        return;
+      }
+      // 已出库但出库次日还没录行情：待行情
+      if (!res.has_market) {
+        valEl.style.color = 'var(--text-secondary)';
+        valEl.textContent = '待行情';
+        detEl.innerHTML = `成本 ¥${cost.toFixed(2)}<br>销售 待行情`;
+        return;
+      }
+
+      const profit = parseFloat(res.profit) || 0;
+      const color = profit > 0 ? 'var(--success)' : (profit < 0 ? 'var(--danger)' : 'var(--text-light)');
+      valEl.style.color = color;
+      valEl.textContent = (profit >= 0 ? '+¥' : '-¥') + Math.abs(profit).toFixed(2);
+      if (profit < 0 && boxEl) {
+        boxEl.style.borderColor = 'rgba(217,48,37,0.3)';
+        boxEl.style.background = 'rgba(217,48,37,0.06)';
+      }
+      detEl.innerHTML = `销售 ¥${(parseFloat(res.sale_price) || 0).toFixed(2)}<br>成本 ¥${cost.toFixed(2)}`;
+    }).catch(() => {
+      const valEl = document.getElementById('order-profit-value');
+      if (valEl) valEl.textContent = '-';
+      const detEl = document.getElementById('order-profit-detail');
+      if (detEl) detEl.textContent = '加载失败';
+    });
+  },
+
+  // 显示单利润计算过程详情
+  async _showOrderProfitDetail(orderNo) {
+    if (!orderNo) {
+      const box = document.getElementById('order-profit-box');
+      orderNo = box?.dataset?.orderNo;
+    }
+    if (!orderNo) return;
+    showModal('📊 单利润计算过程');
+    document.getElementById('modal-body').innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-secondary);">计算中...</div>';
+    try {
+      const res = await API.get(`/api/main/order-profit?orderNo=${encodeURIComponent(orderNo)}`);
+      const cost = parseFloat(res.cost_price) || 0;
+      const sale = parseFloat(res.sale_price) || 0;
+      const profit = parseFloat(res.profit) || 0;
+      const profitColor = profit > 0 ? 'var(--success)' : (profit < 0 ? 'var(--danger)' : 'var(--text-light)');
+
+      let detailRows = '';
+      if (res.detail && res.detail.length) {
+        detailRows = res.detail.map(r => {
+          const saleFormula = r.out_qty > 0
+            ? `¥${(r.next_day_price || 0).toFixed(2)} × ${r.in_qty}（本单内数量） = <strong>¥${r.sale.toFixed(2)}</strong>`
+            : '<span style="color:var(--text-light);">未出库，无销售</span>';
+          const statusBadge = r.out_qty > 0
+            ? (r.next_day_price > 0 ? '<span class="badge badge-stock-normal">已算</span>' : '<span class="badge badge-stock-low">待行情</span>')
+            : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>';
+          return `
+            <tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:8px;vertical-align:top;">
+                <div style="font-size:12px;"><code>${r.code}</code></div>
+                <div style="font-size:13px;font-weight:600;">${r.name}</div>
+                <div style="font-size:11px;color:var(--text-secondary);">本单入库 ${r.in_qty}，累计已出 ${r.out_qty}</div>
+              </td>
+              <td style="padding:8px;vertical-align:top;font-size:12px;">
+                ${r.out_date ? `<div>出库日：<strong>${r.out_date}</strong></div><div>次日：<strong>${r.next_day}</strong></div>` : '<span style="color:var(--text-light);">—</span>'}
+              </td>
+              <td style="padding:8px;vertical-align:top;font-size:12px;">
+                ${r.next_day_price > 0 ? `<div>次日价：<strong>¥${r.next_day_price.toFixed(2)}</strong></div>` : '<span style="color:var(--text-light);">—</span>'}
+              </td>
+              <td style="padding:8px;vertical-align:top;font-size:12px;">
+                ${saleFormula}
+              </td>
+              <td style="padding:8px;vertical-align:top;text-align:center;">${statusBadge}</td>
+            </tr>`;
+        }).join('');
+      }
+
+      let summaryText;
+      if (!res.has_out) summaryText = '<span style="color:var(--text-secondary);">尚未出库，无法计算</span>';
+      else if (!res.has_market) summaryText = '<span style="color:var(--text-secondary);">出库次日行情未录，暂无法计算</span>';
+      else summaryText = `<strong>销售 ${res.detail.filter(r => r.out_qty > 0).length} 项</strong> = ¥${sale.toFixed(2)}`;
+
+      document.getElementById('modal-body').innerHTML = `
+        <div style="padding:4px 0;">
+          <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);">
+            <div>订单号：<strong style="color:var(--primary);">${orderNo}</strong></div>
+            <div>成本（整单金额）：<strong>¥${cost.toFixed(2)}</strong></div>
+            <div>销售（出库次日行情 × 本单数量）：<strong>${summaryText}</strong></div>
+            <div>单利润：<strong style="color:${profitColor};font-size:16px;">${profit >= 0 ? '+' : ''}¥${profit.toFixed(2)}</strong></div>
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">各商品计算明细：</div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:12px;">
+              <thead>
+                <tr style="background:var(--bg);">
+                  <th style="padding:8px;text-align:left;">商品</th>
+                  <th style="padding:8px;text-align:left;">出库/次日</th>
+                  <th style="padding:8px;text-align:left;">行情</th>
+                  <th style="padding:8px;text-align:left;">销售</th>
+                  <th style="padding:8px;">状态</th>
+                </tr>
+              </thead>
+              <tbody>${detailRows || '<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text-light);">暂无明细</td></tr>'}</tbody>
+            </table>
+          </div>
+          <p style="margin-top:12px;padding:10px;background:rgba(26,115,232,0.06);border-left:3px solid var(--primary);font-size:12px;color:var(--text-secondary);line-height:1.6;">
+            <strong>计算规则：</strong>成本 = 整单金额（首个商品填的金额）；销售 = 各商品「出库日次日」录的行情价 × 该商品在本单内的全部数量；利润 = 销售 - 成本。次日行情固定时点，后续不再变。
+          </p>
+        </div>
+      `;
+    } catch (e) {
+      document.getElementById('modal-body').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);">加载失败：${e.message}</div>`;
+    }
+  },
+
+  // 删除整单（一个订单号的所有记录）
+  async _deleteGroup(cacheKey, orderNo) {
+    if (!confirm(`确认删除订单号 "${orderNo}" 的所有入库记录？此操作不可恢复！`)) return;
+    const items = this._groupStatsCache[cacheKey] || [];
+    for (const r of items) {
+      try { await API.del(`/api/${this.currentSystem || 'main'}/inbound/${r.id}`); } catch (e) {}
+    }
+    showToast(`已删除 ${items.length} 条记录`);
+    const sys = this.currentSystem || 'main';
+    await this._refreshInboundTable(sys);
+    if (this.currentTab === 'ledger') await this.renderLedgerTab(sys);
   },
 
   async submitInbound(system) {
@@ -255,6 +539,8 @@ const TransactionsModule = {
     const imagePath = this.inboundImages.length > 0 ? this.inboundImages[0] : '';
 
     if (!code || !quantity) { showToast('请填写编码和数量'); return; }
+    // 一单多品：首个商品必须登记单号
+    if (!orderNo) { showToast('请填写订单号（一单多品首个商品必填）'); return; }
 
     try {
       await API.post(`/api/${system}/inbound`, {
@@ -263,14 +549,52 @@ const TransactionsModule = {
       });
       showToast('入库登记成功！');
       this.inboundImages = [];
-      document.getElementById('inbound-form').reset();
       document.getElementById('inbound-image-preview').innerHTML = '';
       await this._refreshInboundTable(system);
       // 如果当前在台账tab，也刷新
       if (this.currentTab === 'ledger') await this.renderLedgerTab(system);
+      // 询问是否继续添加该单其他商品
+      this._askContinueInbound(system, orderNo);
     } catch (e) {
       showToast('入库登记失败: ' + e.message);
     }
+  },
+
+  // 一单多品：提交成功后询问是否继续
+  _askContinueInbound(system, orderNo) {
+    showModal('✅ 入库登记成功');
+    const body = document.getElementById('modal-body');
+    body.innerHTML = `
+      <div style="text-align:center;padding:10px 0;">
+        <p style="margin-bottom:4px;font-size:15px;">商品已入库</p>
+        <p style="color:var(--text-secondary);font-size:13px;margin-bottom:16px;">
+          当前单号：<strong style="color:var(--primary);">${orderNo || '-'}</strong>
+        </p>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <button class="btn btn-success btn-lg" onclick="TransactionsModule.continueInbound('${system}')">📦 继续添加该单其他商品</button>
+          <button class="btn btn-secondary btn-lg" onclick="TransactionsModule.finishInbound('${system}')">✔ 结束</button>
+        </div>
+      </div>
+    `;
+  },
+
+  // 继续添加该单其他商品：清空商品字段，保留单号
+  continueInbound(system) {
+    const orderInput = document.getElementById('inbound-order');
+    const orderNo = orderInput ? orderInput.value : '';
+    closeModal();
+    document.getElementById('inbound-form').reset();
+    if (orderInput) orderInput.value = orderNo; // 沿用单号，不用再录
+    this.inboundImages = [];
+    const preview = document.getElementById('inbound-image-preview');
+    if (preview) preview.innerHTML = '';
+    setTimeout(() => document.getElementById('inbound-code')?.focus(), 100);
+  },
+
+  // 结束：清空整单，不再弹窗
+  finishInbound(system) {
+    closeModal();
+    this.resetInboundForm();
   },
 
   resetInboundForm() {
@@ -334,6 +658,13 @@ const TransactionsModule = {
               <input type="text" id="outbound-location" placeholder="发货地点" />
             </div>
             <div class="form-group">
+              <label>订单号/快递单号 <span style="color:var(--text-light);font-size:11px;">(可后补)</span></label>
+              <div class="input-with-btn">
+                <input type="text" id="outbound-order-no" placeholder="选填，之后可批量补录" />
+                <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('outbound-order-no')">扫码</button>
+              </div>
+            </div>
+            <div class="form-group">
               <label>发货图片</label>
               <div id="outbound-image-preview" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;"></div>
               <button type="button" class="btn btn-sm btn-secondary" onclick="TransactionsModule.captureOutboundImage('${system}')">拍照上传</button>
@@ -349,7 +680,10 @@ const TransactionsModule = {
       <div class="card" style="margin-top:16px;">
         <div class="card-header">
           <h3>出库记录表</h3>
-          <span style="font-size:12px;color:var(--text-light);" id="outbound-count-label">加载中...</span>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button class="btn btn-sm btn-primary" onclick="TransactionsModule.showFillOrderModal('${system}')">📝 补录订单号</button>
+            <span style="font-size:12px;color:var(--text-light);" id="outbound-count-label">加载中...</span>
+          </div>
         </div>
         <div class="card-body" style="padding:0;">
           <div class="table-wrapper">
@@ -363,6 +697,7 @@ const TransactionsModule = {
                   <th>规格</th>
                   <th>登记数量</th>
                   <th>地点</th>
+                  <th>订单号</th>
                   <th>图片</th>
                   <th>操作</th>
                 </tr>
@@ -399,12 +734,13 @@ const TransactionsModule = {
         const bgColor = r.row_color || '';
         return `<tr class="${bgColor ? 'row-color' : ''}" ${bgColor ? "style='--row-bg:" + bgColor + ";--row-bg-hover:" + bgColor + "'" : ''}>
           <td>${this._renderColorCell(r.id, 'outbound', r.row_color)}</td>
-          <td style="white-space:nowrap;font-size:12px;">${r.created_at}</td>
+          <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
           <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
           <td>${p ? p.name : '-'}</td>
           <td>${p ? (p.spec || '-') : '-'}</td>
-          <td><strong style="color:var(--danger);">-${r.quantity}</strong></td>
+          <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
           <td>${r.location || '-'}</td>
+          <td>${r.order_no ? '<span style="color:var(--primary);font-size:12px;">📦 ' + r.order_no + '</span>' : '<span style="color:#bbb;font-size:11px;">未填</span>'}</td>
           <td>${r.image_path ? `<div class="image-preview" onclick="showImagePreview('${r.image_path}')"><img src="${r.image_path}" /></div>` : '-'}</td>
           <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteOutbound('${system}',${r.id})">删除</button></td>
         </tr>`;
@@ -418,13 +754,14 @@ const TransactionsModule = {
     const code = document.getElementById('outbound-code').value.trim();
     const quantity = parseFloat(document.getElementById('outbound-qty').value);
     const location = document.getElementById('outbound-location').value.trim();
+    const orderNo = document.getElementById('outbound-order-no').value.trim();
     const imagePath = this.outboundImages.length > 0 ? this.outboundImages[0] : '';
 
     if (!code || !quantity) { showToast('请填写编码和数量'); return; }
 
     try {
       await API.post(`/api/${system}/outbound`, {
-        product_code: code, quantity, image_path: imagePath, location
+        product_code: code, quantity, image_path: imagePath, location, order_no: orderNo
       });
       showToast('出库登记成功！');
       this.outboundImages = [];
@@ -437,10 +774,87 @@ const TransactionsModule = {
     }
   },
 
+  // ===== 补录出库订单号 =====
+  async showFillOrderModal(system) {
+    try {
+      const records = await API.get(`/api/${system}/outbound`);
+      const products = await API.get(`/api/${system}/products`);
+      // 只显示未填订单号的记录
+      const pending = records.filter(r => !r.order_no);
+      showModal('📝 补录出库订单号');
+      const body = document.getElementById('modal-body');
+
+      if (pending.length === 0) {
+        body.innerHTML = `<div style="text-align:center;padding:30px;">
+          <div style="font-size:48px;">🎉</div>
+          <p style="color:var(--text-secondary);margin-top:12px;">所有出库记录都已填过订单号</p>
+        </div>`;
+        return;
+      }
+
+      body.innerHTML = `
+        <div style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:12px;">
+          <table style="width:100%;">
+            <thead><tr>
+              <th style="padding:8px;"><input type="checkbox" id="fill-all-check" onchange="TransactionsModule._toggleAllFill(this)" checked /></th>
+              <th>日期时间</th><th>编码</th><th>名称</th><th>规格</th><th>数量</th>
+            </tr></thead>
+            <tbody>
+              ${pending.map(r => {
+                const p = products.find(x => x.code === r.product_code);
+                return `<tr>
+                  <td style="text-align:center;"><input type="checkbox" class="fill-check" value="${r.id}" checked /></td>
+                  <td style="font-size:11px;white-space:nowrap;">${this._fmtDateTime(r.created_at)}</td>
+                  <td><code style="background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
+                  <td>${p ? p.name : '-'}</td>
+                  <td>${p ? (p.spec || '-') : '-'}</td>
+                  <td style="color:var(--danger);">-${this._fmtQty(r.quantity)}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div class="form-group">
+          <label>订单号/快递单号 <span style="color:var(--danger)">*</span></label>
+          <div class="input-with-btn">
+            <input type="text" id="fill-order-no" placeholder="输入本次出库的订单号" />
+            <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('fill-order-no')">扫码</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="btn btn-primary btn-lg" style="flex:1;" onclick="TransactionsModule.submitFillOrder('${system}')">保存订单号</button>
+          <button class="btn btn-secondary btn-lg" style="flex:1;" onclick="closeModal()">取消</button>
+        </div>
+      `;
+      setTimeout(() => document.getElementById('fill-order-no')?.focus(), 100);
+    } catch (e) {
+      showToast('加载失败: ' + e.message);
+    }
+  },
+
+  _toggleAllFill(el) {
+    document.querySelectorAll('.fill-check').forEach(c => c.checked = el.checked);
+  },
+
+  async submitFillOrder(system) {
+    const orderNo = document.getElementById('fill-order-no').value.trim();
+    const ids = Array.from(document.querySelectorAll('.fill-check:checked')).map(c => parseInt(c.value));
+    if (!orderNo) { showToast('请填写订单号'); return; }
+    if (ids.length === 0) { showToast('请至少勾选一条出库记录'); return; }
+    try {
+      await API.patch(`/api/${system}/outbound/batch-order`, { ids, order_no: orderNo });
+      showToast(`已为 ${ids.length} 条记录补录订单号 ${orderNo}`);
+      closeModal();
+      await this._refreshOutboundTable(system);
+      if (this.currentTab === 'ledger') await this.renderLedgerTab(system);
+    } catch (e) {
+      showToast('补录失败: ' + e.message);
+    }
+  },
+
   resetOutboundForm() {
     document.getElementById('outbound-form').reset();
-    this.outboundImages = [];
-    const preview = document.getElementById('outbound-image-preview');
+    this.outboundImages = [];    const preview = document.getElementById('outbound-image-preview');
     if (preview) preview.innerHTML = '';
   },
 
@@ -569,31 +983,29 @@ const TransactionsModule = {
                       <th>物品编码</th>
                       <th>物品名称</th>
                       <th>规格</th>
+                      <th>套组倍数</th>
                       <th>登记数量</th>
                       <th>地点</th>
-                      <th>售价</th>
-                      <th>成本</th>
-                      <th>利润</th>
+                      <th>销售额</th>
                       <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
                     ${filteredOut.map(r => {
-                      const profit = parseFloat(r.profit) || 0;
-                      const profitClass = profit > 0 ? 'var(--success)' : profit < 0 ? 'var(--danger)' : 'var(--text-light)';
                       const bgColor = r.row_color || '';
                       const sys = TransactionsModule.currentSystem;
+                      const bq = parseInt(r.bundle_qty) || 1;
+                      const showBq = r.product_type === '抖音刷券' || !r.product_type;
                       return `<tr class="${bgColor ? 'row-color' : ''}" ${bgColor ? "style='--row-bg:" + bgColor + ";--row-bg-hover:" + bgColor + "'" : ''}>
                       <td>${TransactionsModule._renderColorCell(r.id, 'outbound', r.row_color)}</td>
-                      <td style="white-space:nowrap;font-size:12px;">${r.created_at}</td>
+                      <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
                       <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
                       <td>${r.product_name || '-'}</td>
                       <td>${r.product_spec || '-'}</td>
-                      <td><strong style="color:var(--danger);">-${r.quantity}</strong></td>
+                      <td style="text-align:center;">${showBq && bq > 1 ? '<span style="color:#fbbc04;font-weight:500;">×' + bq + '</span>' : '<span style="color:#bbb;">-</span>'}</td>
+                      <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
                       <td>${r.location || '-'}</td>
                       <td>${r.sale_price ? '¥' + r.sale_price : '-'}</td>
-                      <td>${r.cost_price ? '¥' + r.cost_price : '-'}</td>
-                      <td><strong style="color:${profitClass};">${profit >= 0 ? '+' : ''}¥${profit.toFixed(2)}</strong></td>
                       <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule._deleteLedgerRecord('${sys}','outbound',${r.id})">删除</button></td>
                     </tr>`;
                     }).join('')}
@@ -718,7 +1130,7 @@ const TransactionsModule = {
             ${isNoOrder ? '📦 未填写订单号' : '📦 订单号: ' + group.orderNo}
           </span>
           <span style="font-size:12px;color:var(--text-light);">${group.items.length} 项商品</span>
-          <span style="font-size:12px;color:var(--text-light);">总数量: <strong>${totalQty}</strong></span>
+          <span style="font-size:12px;color:var(--text-light);">总数量: <strong>${this._fmtQty(totalQty)}</strong></span>
           ${isInbound && totalPrice > 0 ? `<span style="font-size:12px;color:var(--text-light);">总金额: <strong>¥${totalPrice.toFixed(2)}</strong></span>` : ''}
           <span style="font-size:11px;color:var(--text-light);margin-left:auto;">
             ${new Date(group.items[0].created_at).toLocaleDateString('zh-CN')}
@@ -733,6 +1145,7 @@ const TransactionsModule = {
                 <th>物品编码</th>
                 <th>物品名称</th>
                 <th>规格</th>
+                <th>套组倍数</th>
                 <th>登记数量</th>
                 ${isInbound ? '<th>渠道</th><th>价格</th>' : '<th>地点</th>'}
                 <th>操作</th>
@@ -744,13 +1157,16 @@ const TransactionsModule = {
     for (const r of group.items) {
       const bgColor = r.row_color || '';
       const sys = TransactionsModule.currentSystem;
+      const bq = parseInt(r.bundle_qty) || 1;
+      const showBq = r.product_type === '抖音刷券' || !r.product_type;
       html += `<tr class="${bgColor ? 'row-color' : ''}" ${bgColor ? "style='--row-bg:" + bgColor + ";--row-bg-hover:" + bgColor + "'" : ''}>
         <td>${this._renderColorCell(r.id, isInbound ? 'inbound' : 'outbound', r.row_color)}</td>
-        <td style="white-space:nowrap;font-size:12px;">${r.created_at}</td>
+        <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
         <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
         <td>${r.product_name || '-'}</td>
         <td>${r.product_spec || '-'}</td>
-        <td><strong style="color:${isInbound ? 'var(--success)' : 'var(--danger)'};">${isInbound ? '+' : '-'}${r.quantity}</strong></td>
+        <td style="text-align:center;">${showBq && bq > 1 ? '<span style="color:#fbbc04;font-weight:500;">×' + bq + '</span>' : '<span style="color:#bbb;">-</span>'}</td>
+        <td><strong style="color:${isInbound ? 'var(--success)' : 'var(--danger)'};">${isInbound ? '+' : '-'}${this._fmtQty(r.quantity)}</strong></td>
         ${isInbound ? `<td>${r.channel || '-'}</td><td>${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>` : `<td>${r.location || '-'}</td>`}
         <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule._deleteLedgerRecord('${sys}','${isInbound ? 'inbound' : 'outbound'}',${r.id})">删除</button></td>
       </tr>`;
