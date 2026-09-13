@@ -1,5 +1,5 @@
 // Service Worker - PWA离线支持
-const CACHE_NAME = 'inventory-cache-v2';
+const CACHE_NAME = 'inventory-cache-v8';
 const CACHE_URLS = [
   '/',
   '/css/style.css',
@@ -62,7 +62,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 静态资源 - 缓存优先
+  // 静态资源：JS/CSS 用「网络优先」（避免改完代码手机上还在跑旧版本），其余缓存优先
+  const url = new URL(event.request.url);
+  const isCode = /\.(js|css)$/.test(url.pathname);
+  if (isCode) {
+    event.respondWith(
+      fetch(event.request)
+        .then(response => {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // 其他静态资源 - 缓存优先
   event.respondWith(
     caches.match(event.request).then((cacheResponse) => {
       return cacheResponse || fetch(event.request).then(response => {
