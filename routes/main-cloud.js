@@ -128,12 +128,30 @@ module.exports = function(db) {
   // 按 ID 更新产品（精确匹配，同编码不同规格用）
   router.put('/products/id/:id', async (req, res) => {
     try {
-      const { name, spec, unit, market_price, type, bundle_qty } = req.body;
+      const { name, spec, unit, market_price, type, bundle_qty, code } = req.body;
+      // 当前产品编码
+      const cur = await db.query('SELECT code FROM main_products WHERE id = ?', [req.params.id]);
+      if (!cur.rows[0]) return res.status(404).json({ error: '产品不存在' });
+      const oldCode = cur.rows[0].code;
+
+      const newCode = (code !== undefined && code !== null) ? String(code).trim() : oldCode;
+      if (!newCode) return res.status(400).json({ error: '编码不能为空' });
+
+      if (newCode !== oldCode) {
+        // 新编码不能与其他产品重复（同 code 多行会导致历史数据归属混乱，禁止改重）
+        const dup = await db.query('SELECT id FROM main_products WHERE code = ? AND id <> ? LIMIT 1', [newCode, req.params.id]);
+        if (dup.rows[0]) return res.status(409).json({ error: '该编码已被其他物品使用，不能改成重复编码' });
+        // 级联同步历史：出入库/价格按 code 整体换名（出入库只按 code 关联）
+        await db.query('UPDATE main_inbound SET product_code = ? WHERE product_code = ?', [newCode, oldCode]);
+        await db.query('UPDATE main_outbound SET product_code = ? WHERE product_code = ?', [newCode, oldCode]);
+        await db.query('UPDATE main_price_history SET product_code = ? WHERE product_code = ?', [newCode, oldCode]);
+      }
+
       await db.query(
-        `UPDATE main_products SET name=?, spec=?, unit=?, market_price=?, type=?, bundle_qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-        [name, spec, unit, market_price, type || '', parseInt(bundle_qty) || 1, req.params.id]
+        `UPDATE main_products SET code=?, name=?, spec=?, unit=?, market_price=?, type=?, bundle_qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+        [newCode, name, spec, unit, market_price, type || '', parseInt(bundle_qty) || 1, req.params.id]
       );
-      res.json({ success: true });
+      res.json({ success: true, renamed: newCode !== oldCode });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -255,6 +273,37 @@ module.exports = function(db) {
   router.delete('/inbound/:id', async (req, res) => {
     try {
       await db.query('DELETE FROM main_inbound WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // 行内编辑：修改单条入库记录的数量 / 渠道 / 价格（只更新传进来的字段）
+  router.patch('/inbound/:id', async (req, res) => {
+    try {
+      const { quantity, channel, purchase_price } = req.body;
+      const sets = [];
+      const params = [];
+
+      if (quantity !== undefined) {
+        const q = parseFloat(quantity);
+        if (!q || q <= 0) return res.status(400).json({ error: '数量必须大于 0' });
+        sets.push('quantity = ?'); params.push(q);
+      }
+      if (channel !== undefined) {
+        sets.push('channel = ?'); params.push(channel || '');
+      }
+      if (purchase_price !== undefined) {
+        const p = parseFloat(purchase_price);
+        if (isNaN(p) || p < 0) return res.status(400).json({ error: '价格不能为负数' });
+        sets.push('purchase_price = ?'); params.push(p);
+      }
+
+      if (sets.length === 0) return res.status(400).json({ error: '没有需要修改的内容' });
+
+      params.push(req.params.id);
+      await db.query(`UPDATE main_inbound SET ${sets.join(', ')} WHERE id = ?`, params);
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: e.message });

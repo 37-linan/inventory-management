@@ -162,6 +162,37 @@ module.exports = function(db) {
     }
   });
 
+  // 行内编辑：修改单条入库记录的数量 / 渠道 / 价格（只更新传进来的字段）
+  router.patch('/inbound/:id', async (req, res) => {
+    try {
+      const { quantity, channel, purchase_price } = req.body;
+      const sets = [];
+      const params = [];
+
+      if (quantity !== undefined) {
+        const q = parseFloat(quantity);
+        if (!q || q <= 0) return res.status(400).json({ error: '数量必须大于 0' });
+        sets.push('quantity = ?'); params.push(q);
+      }
+      if (channel !== undefined) {
+        sets.push('channel = ?'); params.push(channel || '');
+      }
+      if (purchase_price !== undefined) {
+        const p = parseFloat(purchase_price);
+        if (isNaN(p) || p < 0) return res.status(400).json({ error: '价格不能为负数' });
+        sets.push('purchase_price = ?'); params.push(p);
+      }
+
+      if (sets.length === 0) return res.status(400).json({ error: '没有需要修改的内容' });
+
+      params.push(req.params.id);
+      await db.query(`UPDATE douyin_inbound SET ${sets.join(', ')} WHERE id = ?`, params);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ========== 出库管理 ==========
 
   router.get('/outbound', async (req, res) => {

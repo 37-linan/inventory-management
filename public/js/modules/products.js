@@ -578,7 +578,8 @@ const ProductsModule = {
         <form id="edit-product-form" class="form-grid" onsubmit="ProductsModule.submitEdit('${system}','${code}','${product.id}');return false;">
           <div class="form-group">
             <label>物品编码</label>
-            <input type="text" value="${product.code}" disabled style="background:#f5f5f5;" />
+            <input type="text" id="edit-product-code" value="${product.code}" required placeholder="可修改，保存后自动同步出入库记录" />
+            <div style="font-size:11px;color:var(--text-light);margin-top:2px;">修改后，该编码的所有出入库/价格记录会一起更新</div>
           </div>
           <div class="form-group">
             <label>物品名称 <span style="color:var(--danger)">*</span></label>
@@ -641,20 +642,24 @@ const ProductsModule = {
     const typeEl = document.getElementById('edit-product-type');
     const type = typeEl ? typeEl.value : (system === 'douyin' ? '抖音刷券' : '');
     const bundleQty = parseInt(document.getElementById('edit-bundle-qty')?.value) || undefined;
+    // 编码（可修改，后端会级联同步历史记录）
+    const codeInput = document.getElementById('edit-product-code');
+    const newCode = codeInput ? codeInput.value.trim() : code;
 
     if (!name) { showToast('请填写物品名称'); return; }
+    if (!newCode) { showToast('请填写物品编码'); return; }
 
     try {
-      const body = { name, spec, unit, market_price: marketPrice, type };
+      const body = { code: newCode, name, spec, unit, market_price: marketPrice, type };
       if (bundleQty) body.bundle_qty = bundleQty;
       // 有 ID 则用 ID 更新（精确匹配），否则用 code+type
       const url = id ? `/api/main/products/id/${encodeURIComponent(id)}` : `/api/main/products/${encodeURIComponent(code)}?type=${encodeURIComponent(type)}`;
       await API.put(url, body);
-      showToast('修改成功');
+      showToast(newCode !== code ? `修改成功，已同步更新历史记录` : '修改成功');
       closeModal();
       await this.loadProducts(system);
     } catch (e) {
-      showToast('修改失败: ' + e.message);
+      showToast('修改失败: ' + (e.message || ''));
     }
   },
 

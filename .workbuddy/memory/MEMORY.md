@@ -6,7 +6,8 @@
 ## 部署信息
 - **腾讯云服务器**: 211.159.186.87 | 用户: ubuntu
 - **SSH 秘钥**: `C:/Users/nan/.workbuddy/tencent-key.pem`（原 /tmp/tencent_rsa 已被系统清理，勿再用）
-- **访问地址**: http://211.159.186.87:3000
+- **访问地址**: https://nanyishangmao.cn （**首选**）| http://211.159.186.87:3000（仅桌面调试）
+  - ⚠️ 手机上必须用 HTTPS 域名访问：HTTP 或 IP:3000 属非安全上下文，浏览器直接禁用 `navigator.mediaDevices`，扫码/拍照全部失效
 - **数据库**: PostgreSQL 14 (inventory_db, 用户 inventory, 密码 inventory123)
 - **进程管理**: PM2 (inventory-app)
 - **代码位置**: /home/ubuntu/inventory-app/
@@ -22,10 +23,43 @@
 
 ## 部署流程（改代码）
 1. 本地改代码 → 推 GitHub
-2. `ssh -i /tmp/tencent_rsa ubuntu@211.159.186.87`
-3. `curl -fsSL https://raw.githubusercontent.com/.../path/file.js -o /home/ubuntu/inventory-app/path/file.js`
-4. `pm2 restart inventory-app`
-5. ❌ 禁止: rm/drop/truncate 数据库
+2. **直接 scp 上传（比 curl 拉 GitHub 稳，大陆网络下 GitHub raw 常超时）**：
+   `scp -i C:/Users/nan/.workbuddy/tencent-key.pem -o StrictHostKeyChecking=no <本地文件> ubuntu@211.159.186.87:/home/ubuntu/inventory-app/<同名路径>`
+3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v8），否则手机一直跑旧代码；同时把 `index.html` 里 `barcode.js?v=N` 的 N 一起加一
+4. 只改前端静态文件不需要重启；改了 `server.js`/`routes/` 才 `pm2 restart inventory-app`
+5. 验证：`md5sum` 对比服务器与本地 + `curl -s -o /dev/null -w '%{http_code}' https://nanyishangmao.cn/`
+6. ❌ 禁止: rm/drop/truncate 数据库
+
+## 扫码规则（2026-09-14 定稿，实测准确率高）
+- 全站唯一扫码入口：`products.js → triggerBarcodeScan(inputId)` → `barcode.js BarcodeScanner.startScan()`
+- **实时优先，绝不自动退拍照**。`startScan` 里 getUserMedia 失败 → 调 `_showCameraError()` 把真实原因写在页面上 + 三个按钮（🔄重新打开实时 / 📸改用拍照 / ⌨️手动输入）。拍照页只能用户手点进入
+- 打开摄像头三档约束逐级放宽：`{facingMode:{ideal:'environment'},1280x720}` → `{facingMode:'environment'}` → `{video:true}`，单档 25s 超时；`NotAllowedError`/`SecurityError` 立即跳出不再降级
+- 超时后若流才返回，必须 `getTracks().forEach(t=>t.stop())`，否则摄像头被占住 → 之后每次扫码都只能拍照（曾踩坑）
+- iPhone 必须显式 `video.play()`；只给 `autoplay` 有时不出帧 → 画面全黑 → 怎么扫都无结果
+- 等 `readyState>=2 && videoWidth>0` 再开始解码；抽帧按视频真实分辨率（上限 1280 宽）而非固定 640×480
+- 解码器：先 `_supportsEan13()` 检查原生 BarcodeDetector 是否真支持 EAN-13（iPhone Safari 只支持二维码，会空转），不支持则走 Quagga 逐帧（间隔 200ms，顺序执行不并发）
+- ❌ 前端零 OCR：`/api/ocr-text` 已从所有路径删除（加了之后反而完全识别不出来）
+- 排查顺序：先 `md5sum` 比对服务器/本地 → 再看用户访问的 URL 是不是 HTTPS → 最后才是代码
+
+## 备案信息（2026-09 完成）
+- ICP 备案号: 粤ICP备2026122814号-1 | 公安备案号: 粤公网安备 44140302000277号
+- 备案主体: 李楠（个人），网站名"楠熠信息记录"
+- 网站底部已挂两个备案号；SSL 证书 2026-11-23 到期需续期（腾讯云 SSL 控制台重申请亚洲诚信免费证书）
+
+## GitHub 推送（2026-09 改 SSH 443）
+- remote: ssh://git@ssh.github.com:443/37-linan/inventory-management.git
+- key: C:/Users/nan/.ssh/github_workbuddy（已加入 GitHub）
+- 推送: GIT_SSH_COMMAND="ssh -i C:/Users/nan/.ssh/github_workbuddy -o StrictHostKeyChecking=no -p 443" git push origin main
+- 大陆网络 HTTPS/22 常不通，443 SSH 最稳
+
+## SSH 运维
+- 腾讯云 22 端口从本机常 Connection refused（网络路径问题）；换网络(手机热点)可恢复
+- 服务器 SSH 挂: 腾讯云控制台 → 轻量应用服务器 → OrcaTerm 免密(TAT)登录 → sudo systemctl restart sshd
+
+## 单利润规则（2026-08 定稿）
+- 成本 = 整单金额（首商品 purchase_price）
+- 售价 = 出库次日(D+1)录的价；次日没录 → 用出库日当天/之前最近价（23:30自动沿用价），不往后找
+- 可随时用大图"✏️ 修改行情"改某天价格，利润自动重算（order-profit 实时计算）
 
 ## 技术栈
 - Node.js 22.23.2 (server.js)

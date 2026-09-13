@@ -194,6 +194,7 @@ const TransactionsModule = {
           <h3>入库记录表</h3>
           <span style="font-size:12px;color:var(--text-light);" id="inbound-count-label">加载中...</span>
         </div>
+        <div style="padding:8px 12px 0;font-size:12px;color:var(--text-secondary);">💡 登记数量、渠道、价格可以直接点击修改，改完自动重算库存与金额</div>
         <div class="card-body" style="padding:0;">
           <div class="table-wrapper">
             <table>
@@ -246,6 +247,9 @@ const TransactionsModule = {
       });
       // 缓存统计用
       this._groupStatsCache = {};
+      // 缓存每条记录原始值，供行内编辑取用（避免把值拼进 onclick 里，渠道名带引号会出错）
+      this._inboundRowCache = {};
+      records.forEach(r => { this._inboundRowCache[r.id] = r; });
       // 组按最新时间倒序（最新单号在上）
       const sortedKeys = Object.keys(groups).sort((a, b) => {
         const ta = new Date(groups[a][0].created_at).getTime();
@@ -268,7 +272,9 @@ const TransactionsModule = {
         const firstItem = [...items].sort((a, b) => a.id - b.id)[0];
         const orderTotal = parseFloat(firstItem.purchase_price || 0);
         const firstTime = items[0].created_at;
-        const groupColor = items[0].row_color || '';
+        // 组头颜色：仅当本单所有商品标了同一种颜色才整单着色；单个商品标记只影响自己那行
+        const allSameColor = items.every(r => r.row_color && r.row_color === items[0].row_color);
+        const groupColor = allSameColor ? (items[0].row_color || '') : '';
         const groupId = `inb-grp-${gi}`;
         const cacheKey = `g${gi}`;
         this._groupStatsCache[cacheKey] = items;
@@ -286,19 +292,20 @@ const TransactionsModule = {
           </td>
         </tr>`;
 
-        // 明细行
+        // 明细行（每行用自己的标记颜色）
         items.forEach(r => {
           const p = products.find(x => x.code === r.product_code);
-          html += `<tr class="${groupId}-rows ${groupColor ? 'row-color' : ''}" ${groupColor ? "style='--row-bg:" + groupColor + ";--row-bg-hover:" + groupColor + "'" : ''}>
+          const rowColor = r.row_color || '';
+          html += `<tr class="${groupId}-rows ${rowColor ? 'row-color' : ''}" ${rowColor ? "style='--row-bg:" + rowColor + ";--row-bg-hover:" + rowColor + "'" : ''}>
             <td>${this._renderColorCell(r.id, 'inbound', r.row_color)}</td>
             <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
             <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
             <td>${p ? p.name : '-'}</td>
             <td>${p ? (p.spec || '-') : '-'}</td>
-            <td><strong style="color:var(--success);">+${this._fmtQty(r.quantity)}</strong></td>
-            <td><span class="badge badge-inbound">${r.channel || '-'}</span></td>
-            <td>${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>
-            <td>${r.image_path ? `<div class="image-preview" onclick="showImagePreview('${r.image_path}')"><img src="${r.image_path}" /></div>` : '-'}</td>
+            <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','quantity',${r.id},this)" title="点击修改数量"><strong style="color:var(--success);">+${this._fmtQty(r.quantity)}</strong><span style="font-size:10px;color:#bbb;margin-left:4px;">✎</span></td>
+            <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','channel',${r.id},this)" title="点击修改渠道"><span class="badge badge-inbound">${r.channel || '-'}</span><span style="font-size:10px;color:#bbb;margin-left:4px;">✎</span></td>
+            <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','purchase_price',${r.id},this)" title="点击修改价格">${r.purchase_price ? '¥' + r.purchase_price : '-'}<span style="font-size:10px;color:#bbb;margin-left:4px;">✎</span></td>
+            <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">📷 图片查看</a>` : '-'}</td>
             <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteInbound('${system}',${r.id})">删除</button></td>
           </tr>`;
         });
@@ -317,6 +324,103 @@ const TransactionsModule = {
     const collapsed = icon.textContent.trim() === '▸';
     rows.forEach(r => r.style.display = collapsed ? '' : 'none');
     icon.textContent = collapsed ? '▾' : '▸';
+  },
+
+  // ===== 行内编辑：点一下「数量 / 渠道 / 价格」就地改，不用删了重填 =====
+  async _editInboundCell(system, field, id, el) {
+    if (el.dataset.editing === '1') return;
+    const rec = (this._inboundRowCache || {})[id];
+    if (!rec) { showToast('数据已刷新，请重新点击'); return; }
+
+    el.dataset.editing = '1';
+    const originalHTML = el.innerHTML;
+    let done = false;
+    let cancelled = false;
+
+    const restore = () => {
+      el.innerHTML = originalHTML;
+      delete el.dataset.editing;
+    };
+
+    const commit = async (rawVal) => {
+      if (done) return;
+      done = true;
+      if (cancelled) return restore();
+
+      const body = {};
+      if (field === 'quantity') {
+        const q = parseFloat(rawVal);
+        if (!q || q <= 0) { showToast('数量必须大于 0'); return restore(); }
+        if (q === parseFloat(rec.quantity)) return restore();
+        body.quantity = q;
+      } else if (field === 'purchase_price') {
+        if (String(rawVal).trim() === '') return restore();
+        const p = parseFloat(rawVal);
+        if (isNaN(p) || p < 0) { showToast('价格不能为负数'); return restore(); }
+        if (p === parseFloat(rec.purchase_price || 0)) return restore();
+        body.purchase_price = p;
+      } else if (field === 'channel') {
+        const ch = String(rawVal).trim();
+        if (ch === (rec.channel || '')) return restore();
+        body.channel = ch;
+      } else {
+        return restore();
+      }
+
+      el.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">保存中...</span>';
+      try {
+        await API.patch(`/api/${system}/inbound/${id}`, body);
+        showToast('已修改');
+        // 重量刷新：库存、整单总数量、整单金额、单利润都会跟着重算
+        await this._refreshInboundTable(system);
+      } catch (e) {
+        showToast('修改失败: ' + e.message);
+        restore();
+      }
+    };
+
+    if (field === 'channel') {
+      const options = await this._getChannelOptions(system);
+      const cur = rec.channel || '';
+      if (cur && !options.includes(cur)) options.unshift(cur);
+      el.innerHTML = `<select style="width:100%;min-width:96px;padding:4px;font-size:12px;border:1px solid var(--primary);border-radius:4px;background:#fff;">
+          <option value="">（不填）</option>
+          ${options.map(o => `<option value="${o}"${o === cur ? ' selected' : ''}>${o}</option>`).join('')}
+        </select>`;
+      const sel = el.querySelector('select');
+      sel.focus();
+      sel.addEventListener('change', () => commit(sel.value));
+      // 兜底：用户开了下拉又没选（值没变）→ 收回编辑器
+      sel.addEventListener('blur', () => setTimeout(() => { if (!done && sel.value === cur) commit(cur); }, 200));
+    } else {
+      const isPrice = field === 'purchase_price';
+      const cur = isPrice ? (rec.purchase_price || '') : (rec.quantity || '');
+      el.innerHTML = `<input type="number" inputmode="decimal" step="0.01" min="0" value="${cur}"
+        style="width:100%;min-width:72px;padding:4px;font-size:13px;border:1px solid var(--primary);border-radius:4px;text-align:center;background:#fff;box-sizing:border-box;" />`;
+      const input = el.querySelector('input');
+      input.focus();
+      try { input.select(); } catch (e) {}
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        else if (e.key === 'Escape') { cancelled = true; input.blur(); }
+      });
+      input.addEventListener('blur', () => commit(input.value));
+    }
+  },
+
+  // 渠道下拉选项（按系统缓存，避免每次点击都请求）
+  async _getChannelOptions(system) {
+    this._channelOptionsCache = this._channelOptionsCache || {};
+    if (this._channelOptionsCache[system]) return [...this._channelOptionsCache[system]];
+    let options = [];
+    try {
+      options = await ConfigManager.getOptions(system, 'channel_options');
+    } catch (e) { options = []; }
+    if (!options || options.length === 0) {
+      options = ['淘宝', '京东', '拼多多', '抖音', '美团', '唯品会', '微信小程序', '淘宝闪购', '百度直播', '支付宝惊喜市集', '其他'];
+    }
+    this._channelOptionsCache[system] = options;
+    return [...options];
   },
 
   // 单号统计弹窗
@@ -741,7 +845,7 @@ const TransactionsModule = {
           <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
           <td>${r.location || '-'}</td>
           <td>${r.order_no ? '<span style="color:var(--primary);font-size:12px;">📦 ' + r.order_no + '</span>' : '<span style="color:#bbb;font-size:11px;">未填</span>'}</td>
-          <td>${r.image_path ? `<div class="image-preview" onclick="showImagePreview('${r.image_path}')"><img src="${r.image_path}" /></div>` : '-'}</td>
+          <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">📷 图片查看</a>` : '-'}</td>
           <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteOutbound('${system}',${r.id})">删除</button></td>
         </tr>`;
       }).join('');

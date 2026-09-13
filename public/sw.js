@@ -1,5 +1,5 @@
 // Service Worker - PWA离线支持
-const CACHE_NAME = 'inventory-cache-v8';
+const CACHE_NAME = 'inventory-cache-v9';
 const CACHE_URLS = [
   '/',
   '/css/style.css',
@@ -17,6 +17,7 @@ const CACHE_URLS = [
 
 // 安装时缓存核心资源
 self.addEventListener('install', (event) => {
+  self.skipWaiting(); // 新版本立即接管，不让用户一直跑旧 SW
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll(CACHE_URLS);
@@ -35,7 +36,7 @@ self.addEventListener('activate', (event) => {
           }
         })
       );
-    })
+    }).then(() => self.clients.claim())
   );
 });
 
@@ -62,9 +63,9 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 静态资源：JS/CSS 用「网络优先」（避免改完代码手机上还在跑旧版本），其余缓存优先
+  // 静态资源：HTML/JS/CSS 一律「网络优先」——避免改完代码手机上还在跑旧版本
   const url = new URL(event.request.url);
-  const isCode = /\.(js|css)$/.test(url.pathname);
+  const isCode = /\.(js|css)$/.test(url.pathname) || event.request.mode === 'navigate';
   if (isCode) {
     event.respondWith(
       fetch(event.request)
@@ -78,7 +79,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // 其他静态资源 - 缓存优先
+  // 其他静态资源（图标/清单等） - 缓存优先
   event.respondWith(
     caches.match(event.request).then((cacheResponse) => {
       return cacheResponse || fetch(event.request).then(response => {
