@@ -24,6 +24,13 @@
    失焦或回车即保存，保存后库存/整单总数量/整单金额/单利润自动重算；不用再删整单重填
    - 接口: `PATCH /api/{main|douyin}/inbound/:id`，只更新传了的字段
    - 前端: `transactions.js _editInboundCell()` + `_getChannelOptions()`
+8. **入库表筛选**（2026-09-14）: 表头「🔍 筛选」按钮 → 展开两块
+   - 「筛选栏」= 关键词输入（全字段模糊匹配）；「筛选条件」= 字段胶囊，点一下把范围限定到该字段
+   - 渠道/标记是枚举 → 筛选栏自动变下拉，不用手打
+   - 关键实现: 渲染必须拆成 `_refreshInboundTable()`（拉数据） + `_renderInboundRows()`（只画表），
+     否则每次输入都重新请求接口会卡、输入框会失焦
+   - 前端: `transactions.js _inboundFilter / _renderInboundRows() / _matchInboundFilter()`
+   - CSS: `style.css` 的 `.filter-*`（入库出库通用，出库表尚未接）
 
 ## 部署流程（改代码）
 1. 本地改代码 → 推 GitHub
