@@ -37,6 +37,7 @@
      ④按**出库日期**归周（**周一起**）
    - 接口: `GET /api/main/dashboard` → `totals{invest,revenue,profit,rate,pending_count,pending_invest}` + `weekly[]` + `orders[]`
    - 前端: `transactions.js _renderLedgerDashboard() / _renderPnlChart()`（手绘 SVG，零依赖，不引 echarts）
+   - 出库判定依赖 FIFO 分配（见下方「出库归属」章节），不是编码出过库就算出库
    - **「总投入」卡片可点击** → `_showInvestDetail()` 弹窗列出构成该数字的已出库单
      （#/单号/采购本金/收益/盈亏/出库日期 + 合计行），复用 dashboard 接口返回的 `orders`，**无额外接口**
    - 卡片数组支持可选 `click` / `hint` 字段；有 click 就加 `class="dash-card-clickable"` + 显示"点击查看明细"
@@ -48,7 +49,7 @@
 1. 本地改代码 → 推 GitHub
 2. **直接 scp 上传（比 curl 拉 GitHub 稳，大陆网络下 GitHub raw 常超时）**：
    `scp -i C:/Users/nan/.workbuddy/tencent-key.pem -o StrictHostKeyChecking=no <本地文件> ubuntu@211.159.186.87:/home/ubuntu/inventory-app/<同名路径>`
-3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v15）
+3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v16）
    - SW 策略已改为：HTML 文档 + `.js/.css` 网络优先，图标/manifest 缓存优先，并加了 skipWaiting/clients.claim
    - 所以**不再需要**手工加 `index.html?` 版本号，但 CACHE_NAME 仍要升，否则 precache 列表不更新
 4. 只改前端静态文件不需要重启；改了 `server.js`/`routes/` 才 `pm2 restart inventory-app`
@@ -85,6 +86,19 @@
 - 成本 = 整单金额（首商品 purchase_price）
 - 售价 = 出库次日(D+1)录的价；次日没录 → 用出库日当天/之前最近价（23:30自动沿用价），**不往后找**
 - 可随时用大图"✏️ 修改行情"改某天价格，利润自动重算（order-profit 实时计算）
+
+## ⚠️ 出库归属 = 先进先出 FIFO（2026-09-14 修复，务必别改回去）
+- **背景**：`main_outbound.order_no` 用户填的是快递单号/「送货上门」，**不是入库单号** →
+  出库记录与入库单**没有关联**，系统本来无法直接知道「哪一单的货出库了」
+- ❌ **曾经的错误做法**：按编码全局汇总，`该编码出过库 → 这单就算已出库`。
+  结果 09-14 才入库、该编码却早在 09-06 出过库的单，被凭空算出一笔销售和盈亏
+- ✅ **正确做法**：`routes/main-cloud.js` 顶部 `computeOutboundAlloc(db)`
+  - 同一编码内入库批次按 `created_at` 升序排队，出库量**从最早批次开始依次扣减**
+  - 某入库批次被扣掉 >0 才算「本单该商品已出库」，`out_date` = 最后消耗它的出库日
+  - `order-profit` 与 `dashboard` **必须共用这一套**（口径一致性）
+- 配套公共函数：`loadPriceMap(db)` / `nextDayOf(day)` / `pickMarketPrice(map, code, day)`
+- 前端：明细里「本单已出」（不是"累计已出"）；行情列标注「取自 YYYY-MM-DD」（回退取价时可见）
+- ❗ douyin-cloud.js 未同步（抖音已下线）；若要启用需照搬同一套
 
 ## 「待行情」= 亏损假象 + 补录方式（2026-09-14）
 - **现象**：某单显示亏损，明细里部分商品状态是「待行情」、销售额按 ¥0 计

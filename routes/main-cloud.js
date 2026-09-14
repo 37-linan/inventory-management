@@ -3,6 +3,87 @@
  */
 const express = require('express');
 
+// ============================================================================
+// 出库归属计算（先进先出 FIFO）
+// ----------------------------------------------------------------------------
+// 背景：main_outbound 只记 product_code，没有和入库单号挂钩，所以系统无法直接
+//       知道「哪一单的货出库了」。
+//       ❌ 旧实现退化成「这个编码只要出过库，就算这单已出库」——于是 09-14 才入库、
+//          而该编码早在 09-06 出过库的单，被误判成「已出库」，凭空算出一笔销售。
+// ✅ 口径：同一编码内按入库时间先后排队，出库量从最早批次开始依次消耗（先进先出）。
+//          某入库批次被消耗掉 >0，才算「这一单的该商品已出库」。
+// 返回：{ [inbound_id]: { out_qty, out_date } }，out_date 取最后消耗它的那次出库日
+// ============================================================================
+async function computeOutboundAlloc(db) {
+  const inRes = await db.query(
+    "SELECT id, product_code, quantity, to_char(created_at,'YYYY-MM-DD HH24:MI:SS') AS ts FROM main_inbound ORDER BY product_code ASC, created_at ASC, id ASC"
+  );
+  const outRes = await db.query(
+    "SELECT product_code, quantity, to_char(created_at,'YYYY-MM-DD HH24:MI:SS') AS ts FROM main_outbound ORDER BY product_code ASC, created_at ASC, id ASC"
+  );
+  const byCode = {};
+  inRes.rows.forEach(r => {
+    const qty = Number(r.quantity) || 0;
+    const g = byCode[r.product_code] || (byCode[r.product_code] = { batches: [], outs: [] });
+    g.batches.push({ id: r.id, remain: qty, got: 0, lastTs: '' });
+  });
+  outRes.rows.forEach(r => {
+    const g = byCode[r.product_code];
+    if (g) g.outs.push({ qty: Number(r.quantity) || 0, ts: String(r.ts || '') });
+  });
+
+  const alloc = {};
+  Object.values(byCode).forEach(g => {
+    let p = 0;
+    g.outs.forEach(o => {
+      let q = o.qty;
+      while (q > 0 && p < g.batches.length) {
+        const b = g.batches[p];
+        const take = Math.min(q, b.remain);
+        if (take > 0) { b.remain -= take; b.got += take; b.lastTs = o.ts; q -= take; }
+        if (b.remain <= 1e-6) p++; else break;
+      }
+    });
+    g.batches.forEach(b => {
+      alloc[b.id] = { out_qty: b.got, out_date: b.lastTs ? b.lastTs.slice(0, 10) : '' };
+    });
+  });
+  return alloc;
+}
+
+// 全部行情价：{ code: [{d:'YYYY-MM-DD', p:Number}...] }（按日期升序）
+async function loadPriceMap(db) {
+  const prRes = await db.query(
+    "SELECT product_code, to_char(date,'YYYY-MM-DD') AS d, price FROM main_price_history ORDER BY product_code ASC, date ASC"
+  );
+  const map = {};
+  prRes.rows.forEach(p => {
+    (map[p.product_code] || (map[p.product_code] = [])).push({ d: p.d, p: Number(p.price) || 0 });
+  });
+  return map;
+}
+
+const pad2 = n => String(n).padStart(2, '0');
+function nextDayOf(day) {
+  const d = new Date(day + 'T00:00:00');
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+// 行情价：① 出库日次日(D+1)优先 ② 次日没录 → 出库日当天/之前最近一天（不往后找）
+// 返回 { price, date, fromNextDay } 或 null
+function pickMarketPrice(priceMap, code, outDay) {
+  if (!outDay) return null;
+  const list = priceMap[code] || [];
+  if (list.length === 0) return null;
+  const nd = nextDayOf(outDay);
+  const hit = list.find(x => x.d === nd);
+  if (hit) return { price: hit.p, date: hit.d, fromNextDay: true };
+  let before = null;
+  for (const x of list) { if (x.d <= outDay) before = x; else break; }
+  return before ? { price: before.p, date: before.d, fromNextDay: false } : null;
+}
+
 module.exports = function(db) {
   const router = express.Router();
 
@@ -484,65 +565,44 @@ module.exports = function(db) {
       // 成本 = 整单金额（首个商品填的），始终显示
       const totalCost = Number(orderItems[0].purchase_price) || 0;
 
+      // 出库归属（FIFO）+ 行情表 + 商品名，一次性取出，避免在循环里 N 次查库
+      const alloc = await computeOutboundAlloc(db);
+      const priceMap = await loadPriceMap(db);
+      const nameRes = await db.query('SELECT code, name FROM main_products ORDER BY id ASC');
+      const nameMap = {};
+      nameRes.rows.forEach(r => { nameMap[r.code] = r.name; });   // 后者覆盖前者 = 取最新一条
+
       let totalSale = 0;
-      let hasOut = false;   // 是否有商品出库过
-      let allOut = true;    // 是否全部出完
+      let hasOut = false;   // 本单是否有商品出库过
+      let allOut = true;    // 本单是否全部出完
       const detail = [];
 
       for (const item of orderItems) {
         const code = item.product_code;
         const inQty = Number(item.quantity) || 0;
-        // 取商品名（用最新一条产品）
-        const prodRec = await db.query('SELECT name FROM main_products WHERE code = ? ORDER BY id DESC LIMIT 1', [code]);
-        const name = prodRec.rows[0]?.name || code;
 
-        const outSum = await db.query(
-          'SELECT COALESCE(SUM(quantity),0) as q FROM main_outbound WHERE product_code = ?',
-          [code]
-        );
-        const outQty = Number(outSum.rows[0].q) || 0;
+        // 本单这一条入库记录，按 FIFO 实际被出库消耗掉多少
+        const a = alloc[item.id] || { out_qty: 0, out_date: '' };
+        const outQty = Number(a.out_qty) || 0;
+        const outDate = a.out_date || '';
         if (outQty < inQty) allOut = false;
 
-        const row = { code, name, in_qty: inQty, out_qty: outQty, out_date: '', next_day: '', next_day_price: 0, sale: 0 };
+        const row = {
+          code, name: nameMap[code] || code,
+          in_qty: inQty, out_qty: outQty,
+          out_date: outDate,
+          next_day: outDate ? nextDayOf(outDate) : '',   // 字面次日（出库日+1）
+          price_date: '',                                 // 行情价实际取自哪一天
+          next_day_price: 0,
+          sale: 0
+        };
 
         if (outQty > 0) {
           hasOut = true;
-          // 出库行情：
-          //  1. 优先：出库日次日(D+1)录的价
-          //  2. 次日没录：用出库日当天/之前最近价（即23:30自动沿用的前一天价）
-          const lastOut = await db.query(
-            'SELECT MAX(created_at) as t FROM main_outbound WHERE product_code = ?',
-            [code]
-          );
-          const outDate = lastOut.rows[0].t ? new Date(lastOut.rows[0].t).toISOString().slice(0, 10) : '';
-          row.out_date = outDate;
-          let salePrice = 0;
-          let usedDate = '';
-          if (outDate) {
-            // 次日
-            const nextDay = new Date(outDate); nextDay.setDate(nextDay.getDate() + 1);
-            const nextDayStr = `${nextDay.getFullYear()}-${String(nextDay.getMonth()+1).padStart(2,'0')}-${String(nextDay.getDate()).padStart(2,'0')}`;
-            const nextRec = await db.query(
-              'SELECT price, to_char(date, \'YYYY-MM-DD\') as d FROM main_price_history WHERE product_code = ? AND date = ?::date LIMIT 1',
-              [code, nextDayStr]
-            );
-            if (nextRec.rows[0]) {
-              salePrice = Number(nextRec.rows[0].price);
-              usedDate = nextRec.rows[0].d;
-            } else {
-              // 次日没录：用出库日当天/之前最近价（23:30沿用的前一天价）
-              const beforeRec = await db.query(
-                'SELECT price, to_char(date, \'YYYY-MM-DD\') as d FROM main_price_history WHERE product_code = ? AND date <= ?::date ORDER BY date DESC LIMIT 1',
-                [code, outDate]
-              );
-              if (beforeRec.rows[0]) {
-                salePrice = Number(beforeRec.rows[0].price);
-                usedDate = beforeRec.rows[0].d;
-              }
-            }
-            row.next_day = usedDate;
-            row.next_day_price = salePrice;
-          }
+          const mp = pickMarketPrice(priceMap, code, outDate);
+          const salePrice = mp ? mp.price : 0;
+          if (mp) row.price_date = mp.date;
+          row.next_day_price = salePrice;
           // 销售额 = 行情价 × 本单该商品的全部数量
           const saleTotal = salePrice * inQty;
           totalSale += saleTotal;
@@ -578,42 +638,13 @@ module.exports = function(db) {
       const inRes = await db.query(
         'SELECT id, order_no, product_code, quantity, purchase_price FROM main_inbound ORDER BY id ASC'
       );
-      const outRes = await db.query(
-        "SELECT product_code, quantity, to_char(created_at,'YYYY-MM-DD') AS d, to_char(created_at,'YYYY-MM-DD HH24:MI:SS') AS ts FROM main_outbound"
-      );
-      const prRes = await db.query(
-        "SELECT product_code, to_char(date,'YYYY-MM-DD') AS d, price FROM main_price_history ORDER BY product_code ASC, date ASC"
-      );
 
-      // 每个编码：出库总量 + 最后一次出库时间（ts 是可排序的字符串，直接比大小）
-      const codeOut = {};
-      outRes.rows.forEach(o => {
-        const a = codeOut[o.product_code] || (codeOut[o.product_code] = { qty: 0, lastTs: '', lastDay: '' });
-        a.qty += Number(o.quantity) || 0;
-        if (String(o.ts || '') > a.lastTs) { a.lastTs = String(o.ts || ''); a.lastDay = o.d; }
-      });
-
-      // 每个编码的行情表（SQL 已按日期升序）
-      const priceList = {};
-      prRes.rows.forEach(p => {
-        (priceList[p.product_code] || (priceList[p.product_code] = [])).push({ d: p.d, p: Number(p.price) || 0 });
-      });
+      // 出库归属：按编码「先进先出」分配到具体入库批次（详见文件顶部 computeOutboundAlloc）
+      // ——本单是否出库，取决于「本单这批货」有没有被出库消耗，而不是「这个编码有没有出过库」
+      const alloc = await computeOutboundAlloc(db);
+      const priceMap = await loadPriceMap(db);
 
       const pad = n => String(n).padStart(2, '0');
-      // 行情价：出库日次日优先，其次出库日当天/之前最近一天（与 order-profit 同一规则）
-      const marketPrice = (code, outDay) => {
-        if (!outDay) return null;
-        const list = priceList[code] || [];
-        if (list.length === 0) return null;
-        const nd = new Date(outDay + 'T00:00:00');
-        nd.setDate(nd.getDate() + 1);
-        const nstr = `${nd.getFullYear()}-${pad(nd.getMonth() + 1)}-${pad(nd.getDate())}`;
-        const hit = list.find(x => x.d === nstr);
-        if (hit) return hit;
-        let before = null;
-        for (const x of list) { if (x.d <= outDay) before = x; else break; }
-        return before;
-      };
 
       // 按单号聚合
       const orders = {};
@@ -629,15 +660,15 @@ module.exports = function(db) {
       Object.keys(orders).forEach(orderNo => {
         const items = orders[orderNo];
         const cost = Number(items[0].purchase_price) || 0;   // 整单金额：取首商品
-        let sale = 0, hasOut = false, lastTs = '', lastDay = '';
+        let sale = 0, hasOut = false, lastDay = '';
 
         items.forEach(it => {
-          const agg = codeOut[it.product_code];
-          if (!agg || agg.qty <= 0) return;
+          const a = alloc[it.id];
+          if (!a || !(a.out_qty > 0)) return;   // 本单这条没被出库消耗 → 不算
           hasOut = true;
-          if (agg.lastTs > lastTs) { lastTs = agg.lastTs; lastDay = agg.lastDay; }
-          const mp = marketPrice(it.product_code, agg.lastDay);
-          if (mp) sale += mp.p * (Number(it.quantity) || 0);
+          if (a.out_date > lastDay) lastDay = a.out_date;
+          const mp = pickMarketPrice(priceMap, it.product_code, a.out_date);
+          if (mp) sale += mp.price * (Number(it.quantity) || 0);
         });
 
         if (!hasOut) { pendingInvest += cost; pendingCount++; return; }

@@ -754,13 +754,15 @@ const TransactionsModule = {
               <td style="padding:8px;vertical-align:top;">
                 <div style="font-size:12px;"><code>${r.code}</code></div>
                 <div style="font-size:13px;font-weight:600;">${r.name}</div>
-                <div style="font-size:11px;color:var(--text-secondary);">本单入库 ${r.in_qty}，累计已出 ${r.out_qty}</div>
+                <div style="font-size:11px;color:var(--text-secondary);">本单入库 ${r.in_qty}，本单已出 ${r.out_qty}</div>
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
                 ${r.out_date ? `<div>出库日：<strong>${r.out_date}</strong></div><div>次日：<strong>${r.next_day}</strong></div>` : '<span style="color:var(--text-light);">—</span>'}
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
-                ${r.next_day_price > 0 ? `<div>次日价：<strong>¥${r.next_day_price.toFixed(2)}</strong></div>` : '<span style="color:var(--text-light);">—</span>'}
+                ${r.next_day_price > 0
+                  ? `<div><strong>¥${r.next_day_price.toFixed(2)}</strong></div>${r.price_date && r.price_date !== r.next_day ? `<div style="font-size:10px;color:var(--text-light);">取自 ${r.price_date}</div>` : ''}`
+                  : '<span style="color:var(--text-light);">—</span>'}
                 ${r.out_qty > 0 ? `<button class="btn btn-sm ${r.next_day_price > 0 ? 'btn-secondary' : 'btn-primary'}" style="margin-top:5px;white-space:nowrap;" onclick="TransactionsModule._showBackfillPrice(${i})">${r.next_day_price > 0 ? '改行情' : '补录行情'}</button>` : ''}
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
@@ -800,7 +802,8 @@ const TransactionsModule = {
             </table>
           </div>
           <p style="margin-top:12px;padding:10px;background:rgba(26,115,232,0.06);border-left:3px solid var(--primary);font-size:12px;color:var(--text-secondary);line-height:1.6;">
-            <strong>计算规则：</strong>成本 = 整单金额（首个商品填的金额）；销售 = 各商品「出库日次日」录的行情价 × 该商品在本单内的全部数量；利润 = 销售 - 成本。次日行情固定时点，后续不再变。
+            <strong>计算规则：</strong>成本 = 整单金额（首个商品填的金额）；销售 = 各商品「出库日次日」录的行情价 × 该商品在本单内的全部数量；利润 = 销售 - 成本。<br>
+            <strong>怎么算「已出库」：</strong>按同一物品编码的入库时间<b>先进先出</b>——出库量从最早入库的那批开始扣，扣到了本单这批才算本单已出库（因为出库记录里没登记属于哪一张入库单）。
           </p>
         </div>
       `;
