@@ -736,9 +736,13 @@ const TransactionsModule = {
       const profit = parseFloat(res.profit) || 0;
       const profitColor = profit > 0 ? 'var(--success)' : (profit < 0 ? 'var(--danger)' : 'var(--text-light)');
 
+      // 缓存明细，供行内「补录行情 / 改行情」按钮按下标取用（避免把商品名拼进 onclick 里出错）
+      this._profitDetail = res.detail || [];
+      this._profitOrderNo = orderNo;
+
       let detailRows = '';
       if (res.detail && res.detail.length) {
-        detailRows = res.detail.map(r => {
+        detailRows = res.detail.map((r, i) => {
           const saleFormula = r.out_qty > 0
             ? `¥${(r.next_day_price || 0).toFixed(2)} × ${r.in_qty}（本单内数量） = <strong>¥${r.sale.toFixed(2)}</strong>`
             : '<span style="color:var(--text-light);">未出库，无销售</span>';
@@ -757,6 +761,7 @@ const TransactionsModule = {
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
                 ${r.next_day_price > 0 ? `<div>次日价：<strong>¥${r.next_day_price.toFixed(2)}</strong></div>` : '<span style="color:var(--text-light);">—</span>'}
+                ${r.out_qty > 0 ? `<button class="btn btn-sm ${r.next_day_price > 0 ? 'btn-secondary' : 'btn-primary'}" style="margin-top:5px;white-space:nowrap;" onclick="TransactionsModule._showBackfillPrice(${i})">${r.next_day_price > 0 ? '改行情' : '补录行情'}</button>` : ''}
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
                 ${saleFormula}
@@ -801,6 +806,73 @@ const TransactionsModule = {
       `;
     } catch (e) {
       document.getElementById('modal-body').innerHTML = `<div style="text-align:center;padding:30px;color:var(--danger);">加载失败：${e.message}</div>`;
+    }
+  },
+
+  // 单利润明细里的「补录行情 / 改行情」：直接给该商品写某一天的行情价，
+  // 不用再绕到「产品信息表 → 行情大图 → 修改行情」。保存后立即重算这单利润。
+  _showBackfillPrice(idx) {
+    const r = (this._profitDetail || [])[idx];
+    if (!r) { showToast('未找到该商品，请重新打开单利润'); return; }
+    const pad = n => String(n).padStart(2, '0');
+    const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const now = new Date();
+    const todayStr = fmt(now);
+    const minDate = (() => { const d = new Date(now); d.setDate(d.getDate() - 180); return fmt(d); })();
+    const maxDate = (() => { const d = new Date(now); d.setDate(d.getDate() + 30); return fmt(d); })();
+    const outDate = r.out_date || '';
+    // 次日日期：接口给了就用，没给就按出库日 +1 推算
+    let nextDayStr = r.next_day || '';
+    if (!nextDayStr && outDate) {
+      const d = new Date(outDate + 'T00:00:00');
+      d.setDate(d.getDate() + 1);
+      nextDayStr = fmt(d);
+    }
+    const existing = Number(r.next_day_price) || 0;
+
+    showModal('补录行情价格');
+    document.getElementById('modal-body').innerHTML = `
+      <div style="padding:8px;">
+        <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:14px;font-size:12px;color:var(--text-secondary);line-height:1.8;">
+          <div style="font-size:13px;font-weight:600;color:var(--text);">${r.name || r.code}</div>
+          <div><code style="font-size:11px;">${r.code}</code></div>
+          <div>出库日：<strong>${outDate || '-'}</strong>　次日：<strong>${nextDayStr || '-'}</strong></div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label>行情日期</label>
+          <input type="date" id="bf-price-date" value="${outDate || todayStr}" min="${minDate}" max="${maxDate}" style="width:100%;padding:10px;font-size:16px;" />
+          <div style="font-size:11px;color:var(--text-light);margin-top:6px;line-height:1.7;">
+            填 <strong>${outDate || '出库日'}</strong> 即可，系统会拿它当出库当天的价；<br>
+            如果你记得次日 ${nextDayStr ? '<strong>' + nextDayStr + '</strong>' : ''} 的价，也可以把日期改成次日 —— 次日价优先。
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:16px;">
+          <label>行情价 (¥)</label>
+          <input type="number" id="bf-price-value" step="0.01" min="0" value="${existing > 0 ? existing : ''}" style="width:100%;padding:10px;font-size:18px;text-align:center;" placeholder="请输入当时的价格" autofocus />
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-secondary" onclick="TransactionsModule._showOrderProfitDetail('${String(this._profitOrderNo || '').replace(/'/g, "\\'")}')" style="flex:1;">返回</button>
+          <button class="btn btn-primary" onclick="TransactionsModule._saveBackfillPrice(${idx})" style="flex:1;">保存并重算</button>
+        </div>
+      </div>
+    `;
+    setTimeout(() => document.getElementById('bf-price-value')?.focus(), 100);
+  },
+
+  async _saveBackfillPrice(idx) {
+    const r = (this._profitDetail || [])[idx];
+    if (!r) { showToast('数据已过期，请重新打开单利润'); return; }
+    const date = document.getElementById('bf-price-date')?.value;
+    const price = parseFloat(document.getElementById('bf-price-value')?.value);
+    if (!date) { showToast('请选择行情日期'); return; }
+    if (isNaN(price) || price < 0) { showToast('请输入有效价格'); return; }
+    try {
+      await API.post('/api/main/price-history', { product_code: r.code, price, date });
+      showToast(`已记录 ${date} 行情 ¥${price.toFixed(2)}，利润已重算`);
+      this._dashData = null;   // 仪表盘缓存失效，下次进信息台账会重新拉
+      await this._showOrderProfitDetail(this._profitOrderNo);
+    } catch (e) {
+      showToast('保存失败：' + e.message);
     }
   },
 
