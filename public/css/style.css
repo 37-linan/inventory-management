@@ -639,6 +639,9 @@ table tr.row-color:hover td { background-color: var(--row-bg-hover); }
 
 .modal-overlay.show { display: flex; }
 
+/* 第二层弹窗：叠在第一个弹窗之上 */
+.modal-overlay-2 { z-index: 2100; }
+
 .modal-container {
   background: var(--card-bg);
   border-radius: var(--radius-lg);

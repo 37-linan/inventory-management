@@ -90,6 +90,17 @@
     </div>
   </div>
 
+  <!-- 第二层模态框（用于「弹窗里再弹出弹窗」，如按设备/下级分组） -->
+  <div id="modal-overlay-2" class="modal-overlay modal-overlay-2" onclick="closeModal2(event)">
+    <div class="modal-container" id="modal-container-2">
+      <div class="modal-header">
+        <h3 id="modal-title-2"></h3>
+        <button class="modal-close" onclick="closeModal2()">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body-2"></div>
+    </div>
+  </div>
+
   <!-- Toast提示 -->
   <div id="toast" class="toast"></div>
 

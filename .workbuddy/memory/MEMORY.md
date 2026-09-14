@@ -40,11 +40,15 @@
    - 出库判定依赖 FIFO 分配（见下方「出库归属」章节），不是"编码出过库就算出库"
    - **「总投入」卡片可点击** → `_showInvestDetail()` 弹窗列出构成该数字的已出库单
      （#/单号/下单设备/采购本金/收益/盈亏/出库日期 + 合计行），复用 dashboard 接口返回的 `orders`，**无额外接口**
-   - **弹窗内可「按下单设备/下级」筛选**（2026-09-14）: 胶囊行 = 「全部 · N 个 · ¥合计」+ 每个设备一枚（直接显示其投入额）
-     - `_renderInvestDetail()` 负责渲染，`_pickInvestDevice(dev)` 切换（`''`=全部）；状态存 `this._investDevice`
-     - 切换只重绘 `modal-body`，**不重新请求接口**；胶囊复用 `.filter-chip`，无新增 CSS
+   - **弹窗内可「按下单设备/下级」拆分**（2026-09-14）: **两层弹窗**
+     - 点弹窗①顶部汇总金额块 → 弹第二层弹窗②「按下单设备/下级 · 投入」
+       （每行=设备/下级，列 投入/收益/盈亏/单数 + 合计；点行再钻取该设备下的单，带「‹ 返回」）
+     - `transactions.js _renderInvestDetail()`=弹窗① / `_showDeviceBreakdown()`=弹窗②列表 /
+       `_showDeviceOrders(idx)`=弹窗②钻取；设备列表缓存 `this._devList`，**行上用下标传参**
      - `by_device[]` 由后端聚合（投入降序），前端只在缺失时兜底；每单 device 取"本单首个填了值的商品"
-     - 口径同上「只算已出库」→ 未出库设备不出现（如"林浩东"的单还没出库就不在胶囊里）
+     - 口径同上「只算已出库」→ 未出库设备不出现（如"林浩东"的单还没出库就不在榜上）
+     - ⚠️ **本项目弹窗是单例**；要弹窗叠弹窗必须用 `#modal-overlay-2`（z-index 2100）
+       + `showModal2()/closeModal2()`，且 `closeModal()` 要连带关掉 overlay-2
    - 卡片数组支持可选 `click` / `hint` 字段；有 click 就加 `class="dash-card-clickable"` + 显示"点击查看明细"
    - 着色：**盈利红 / 亏损绿**（国内习惯）
    - ⚠️ 后端聚合时日期要用 `to_char(...)` 出字符串再比大小，不能 `String(pgDate)`
@@ -54,7 +58,7 @@
 1. 本地改代码 → 推 GitHub
 2. **直接 scp 上传（比 curl 拉 GitHub 稳，大陆网络下 GitHub raw 常超时）**：
    `scp -i C:/Users/nan/.workbuddy/tencent-key.pem -o StrictHostKeyChecking=no <本地文件> ubuntu@211.159.186.87:/home/ubuntu/inventory-app/<同名路径>`
-3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v17）
+3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v18）
    - SW 策略已改为：HTML 文档 + `.js/.css` 网络优先，图标/manifest 缓存优先，并加了 skipWaiting/clients.claim
    - 所以**不再需要**手工加 `index.html?` 版本号，但 CACHE_NAME 仍要升，否则 precache 列表不更新
 4. 只改前端静态文件不需要重启；改了 `server.js`/`routes/` 才 `pm2 restart inventory-app`

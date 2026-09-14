@@ -187,13 +187,33 @@ function closeModal(e) {
   if (e && e.target !== document.getElementById('modal-overlay')) return;
   const overlay = document.getElementById('modal-overlay');
   overlay.classList.remove('show');
-  
+
+  // 连带关掉叠在它上面的第二层弹窗，避免留下一个关不掉的浮层
+  const overlay2 = document.getElementById('modal-overlay-2');
+  if (overlay2) overlay2.classList.remove('show');
+
   // 停止相机
   CameraCapture.closeCamera();
   BarcodeScanner.stopScan();
   
   // 清理临时覆盖层
   document.querySelectorAll('#scan-overlay, #temp-scanner').forEach(el => el.remove());
+}
+
+// 第二层弹窗（弹窗里再弹一个），关闭后回到下面那层
+function closeModal2(e) {
+  if (e && e.target !== document.getElementById('modal-overlay-2')) return;
+  const overlay2 = document.getElementById('modal-overlay-2');
+  if (overlay2) overlay2.classList.remove('show');
+}
+
+// 打开/更新第二层弹窗
+function showModal2(title) {
+  const overlay2 = document.getElementById('modal-overlay-2');
+  if (!overlay2) return;
+  const titleEl = document.getElementById('modal-title-2');
+  if (titleEl) titleEl.textContent = title || '明细';
+  overlay2.classList.add('show');
 }
 
 // ========== 页面加载初始化 ==========
