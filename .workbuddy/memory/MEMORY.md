@@ -38,6 +38,7 @@
    - 接口: `GET /api/main/dashboard` → `totals{invest,revenue,profit,rate,pending_count,pending_invest}` + `weekly[]` + `orders[]`
    - 前端: `transactions.js _renderLedgerDashboard() / _renderPnlChart()`（手绘 SVG，零依赖，不引 echarts）
    - 出库判定依赖 FIFO 分配（见下方「出库归属」章节），不是编码出过库就算出库
+   - 出库判定依赖 FIFO 分配（见下方「出库归属」章节），不是编码出过库就算出库
    - **「总投入」卡片可点击** → `_showInvestDetail()` 弹窗列出构成该数字的已出库单
      （#/单号/采购本金/收益/盈亏/出库日期 + 合计行），复用 dashboard 接口返回的 `orders`，**无额外接口**
    - 卡片数组支持可选 `click` / `hint` 字段；有 click 就加 `class="dash-card-clickable"` + 显示"点击查看明细"
