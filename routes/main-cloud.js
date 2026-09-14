@@ -566,6 +566,135 @@ module.exports = function(db) {
     }
   });
 
+  // ========== 盈亏仪表盘 ==========
+
+  // 口径（2026-09-14 与用户确认定稿）：
+  //   1. 只统计「已出库」的单号（本单有商品出过库）——未出库的单不参与，等出库后自动进榜
+  //   2. 成本 = 该单第一条商品的 purchase_price（整单金额），与 order-profit 完全一致
+  //   3. 收益 = Σ 各商品（行情价 × 入库数量），行情价 = 出库日次日价，没录则取出库日当天/之前最近价
+  //   4. 走势图按「出库日期」归到自然周（周一起）
+  router.get('/dashboard', async (req, res) => {
+    try {
+      const inRes = await db.query(
+        'SELECT id, order_no, product_code, quantity, purchase_price FROM main_inbound ORDER BY id ASC'
+      );
+      const outRes = await db.query(
+        "SELECT product_code, quantity, to_char(created_at,'YYYY-MM-DD') AS d, to_char(created_at,'YYYY-MM-DD HH24:MI:SS') AS ts FROM main_outbound"
+      );
+      const prRes = await db.query(
+        "SELECT product_code, to_char(date,'YYYY-MM-DD') AS d, price FROM main_price_history ORDER BY product_code ASC, date ASC"
+      );
+
+      // 每个编码：出库总量 + 最后一次出库时间（ts 是可排序的字符串，直接比大小）
+      const codeOut = {};
+      outRes.rows.forEach(o => {
+        const a = codeOut[o.product_code] || (codeOut[o.product_code] = { qty: 0, lastTs: '', lastDay: '' });
+        a.qty += Number(o.quantity) || 0;
+        if (String(o.ts || '') > a.lastTs) { a.lastTs = String(o.ts || ''); a.lastDay = o.d; }
+      });
+
+      // 每个编码的行情表（SQL 已按日期升序）
+      const priceList = {};
+      prRes.rows.forEach(p => {
+        (priceList[p.product_code] || (priceList[p.product_code] = [])).push({ d: p.d, p: Number(p.price) || 0 });
+      });
+
+      const pad = n => String(n).padStart(2, '0');
+      // 行情价：出库日次日优先，其次出库日当天/之前最近一天（与 order-profit 同一规则）
+      const marketPrice = (code, outDay) => {
+        if (!outDay) return null;
+        const list = priceList[code] || [];
+        if (list.length === 0) return null;
+        const nd = new Date(outDay + 'T00:00:00');
+        nd.setDate(nd.getDate() + 1);
+        const nstr = `${nd.getFullYear()}-${pad(nd.getMonth() + 1)}-${pad(nd.getDate())}`;
+        const hit = list.find(x => x.d === nstr);
+        if (hit) return hit;
+        let before = null;
+        for (const x of list) { if (x.d <= outDay) before = x; else break; }
+        return before;
+      };
+
+      // 按单号聚合
+      const orders = {};
+      inRes.rows.forEach(r => {
+        const key = r.order_no || '（无单号）';
+        (orders[key] || (orders[key] = [])).push(r);
+      });
+
+      let invest = 0, revenue = 0, pendingInvest = 0, pendingCount = 0, outCount = 0;
+      const weekMap = {};
+      const orderList = [];
+
+      Object.keys(orders).forEach(orderNo => {
+        const items = orders[orderNo];
+        const cost = Number(items[0].purchase_price) || 0;   // 整单金额：取首商品
+        let sale = 0, hasOut = false, lastTs = '', lastDay = '';
+
+        items.forEach(it => {
+          const agg = codeOut[it.product_code];
+          if (!agg || agg.qty <= 0) return;
+          hasOut = true;
+          if (agg.lastTs > lastTs) { lastTs = agg.lastTs; lastDay = agg.lastDay; }
+          const mp = marketPrice(it.product_code, agg.lastDay);
+          if (mp) sale += mp.p * (Number(it.quantity) || 0);
+        });
+
+        if (!hasOut) { pendingInvest += cost; pendingCount++; return; }
+
+        sale = Number(sale.toFixed(2));
+        const profit = Number((sale - cost).toFixed(2));
+        invest += cost;
+        revenue += sale;
+        outCount++;
+        orderList.push({ order_no: orderNo, cost, sale, profit, out_date: lastDay || '' });
+
+        // 归到自然周（周一为一周起点）
+        const d = new Date((lastDay || '1970-01-01') + 'T00:00:00');
+        d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+        const wk = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        const w = weekMap[wk] || (weekMap[wk] = { week_start: wk, profit: 0, revenue: 0, cost: 0, orders: 0 });
+        w.profit += profit; w.revenue += sale; w.cost += cost; w.orders++;
+      });
+
+      invest = Number(invest.toFixed(2));
+      revenue = Number(revenue.toFixed(2));
+      const profit = Number((revenue - invest).toFixed(2));
+
+      let acc = 0;
+      const weekly = Object.keys(weekMap).sort().map(k => {
+        const w = weekMap[k];
+        acc = Number((acc + w.profit).toFixed(2));
+        return {
+          week_start: w.week_start,
+          profit: Number(w.profit.toFixed(2)),
+          revenue: Number(w.revenue.toFixed(2)),
+          cost: Number(w.cost.toFixed(2)),
+          orders: w.orders,
+          cumulative: acc
+        };
+      });
+
+      res.json({
+        success: true,
+        totals: {
+          invest,
+          revenue,
+          profit,
+          rate: invest > 0 ? Number((profit / invest * 100).toFixed(1)) : 0,
+          order_count: outCount,
+          pending_count: pendingCount,
+          pending_invest: Number(pendingInvest.toFixed(2))
+        },
+        weekly,
+        orders: orderList
+      });
+    } catch (e) {
+      console.error('[dashboard] 错误:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ========== 台账 ==========
 
   router.get('/ledger', async (req, res) => {

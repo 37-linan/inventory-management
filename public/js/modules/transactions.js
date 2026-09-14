@@ -106,7 +106,12 @@ const TransactionsModule = {
 
     if (tab === 'inbound-form') this.renderInboundTab(system);
     else if (tab === 'outbound-form') this.renderOutboundTab(system);
-    else if (tab === 'ledger') this.renderLedgerTab(system);
+    else if (tab === 'ledger') {
+      // 每次进信息台账都重新拉一次，避免新登记的数据/盈亏还在用旧缓存
+      this._ledgerData = null;
+      this._dashData = null;
+      this.renderLedgerTab(system);
+    }
   },
 
   // 数量显示：整数不带小数（1.00 → 1），真小数保留（1.50 → 1.5）
@@ -1167,6 +1172,139 @@ const TransactionsModule = {
   },
 
   // ================================================================
+  //  盈亏仪表盘（信息台账顶部）
+  //  口径：只统计「已出库」的单号；成本=整单金额(首商品)；收益=行情价×入库数量
+  //        走势按「出库日期」归到自然周（周一起）
+  // ================================================================
+  _fmtMoney(v) {
+    const n = Number(v) || 0;
+    return (n < 0 ? '-¥' : '¥') + Math.abs(n).toFixed(2);
+  },
+
+  _renderLedgerDashboard(dash) {
+    const t = dash.totals || {};
+    const profit = Number(t.profit) || 0;
+    const rate = Number(t.rate) || 0;
+    const UP = '#c62828';    // 盈利（红）
+    const DOWN = '#2e7d32';  // 亏损（绿）
+    const pnlColor = profit >= 0 ? UP : DOWN;
+
+    const cards = [
+      { label: '总投入', value: this._fmtMoney(t.invest), color: 'var(--text)', sub: `已出库 ${t.order_count || 0} 单的采购本金` },
+      { label: '总收益', value: this._fmtMoney(t.revenue), color: 'var(--text)', sub: '已出库部分按行情价计' },
+      { label: '净盈亏', value: this._fmtMoney(profit), color: pnlColor, sub: '总收益 − 总投入' },
+      { label: '盈亏率', value: (rate > 0 ? '+' : '') + rate.toFixed(1) + '%', color: pnlColor, sub: '净盈亏 ÷ 总投入' }
+    ];
+
+    const pendingNote = Number(t.pending_count) > 0
+      ? `<div style="font-size:11px;color:var(--text-light);margin-top:10px;">另有 ${t.pending_count} 单尚未出库（本金 ${this._fmtMoney(t.pending_invest)}），按约定不计入上面的统计</div>`
+      : '';
+
+    return `
+      <div class="card" style="margin-bottom:12px;">
+        <div class="card-header">
+          <h3>盈亏总览</h3>
+          <span style="font-size:12px;color:var(--text-light);">只统计已出库的单 · 按出库日期归周</span>
+        </div>
+        <div class="card-body">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">
+            ${cards.map(c => `
+              <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
+                <div style="font-size:11px;color:var(--text-light);margin-bottom:6px;">${c.label}</div>
+                <div style="font-size:22px;font-weight:600;line-height:1.25;color:${c.color};">${c.value}</div>
+                <div style="font-size:11px;color:var(--text-light);margin-top:6px;">${c.sub}</div>
+              </div>`).join('')}
+          </div>
+          ${pendingNote}
+          <div style="margin-top:18px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">每周盈亏走势</div>
+            ${this._renderPnlChart(dash.weekly || [])}
+            <div style="font-size:11px;color:var(--text-light);margin-top:6px;">柱：当周盈亏（红＝盈利 / 绿＝亏损）　金色折线：累计盈亏</div>
+          </div>
+        </div>
+      </div>
+    `;
+  },
+
+  // 手绘 SVG 图表：柱=当周盈亏，折线=累计盈亏（不依赖任何图表库，离线也能用）
+  _renderPnlChart(weekly) {
+    const n = weekly.length;
+    if (n === 0) {
+      return '<div style="padding:26px;text-align:center;color:var(--text-light);font-size:12px;">还没有出库记录 —— 有商品出库后，这里会按周显示盈亏走势</div>';
+    }
+
+    const W = 720, H = 250;
+    const padL = 64, padR = 14, padT = 16, padB = 30;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+
+    const vals = [];
+    weekly.forEach(w => { vals.push(Number(w.profit) || 0); vals.push(Number(w.cumulative) || 0); });
+    let mn = Math.min(0, ...vals);
+    let mx = Math.max(0, ...vals);
+    if (mn === mx) { mn -= 10; mx += 10; }
+
+    // 取整齐的刻度（1/2/5 × 10^n）
+    const raw = (mx - mn) / 4;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+    const norm = raw / mag;
+    const mult = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+    const step = Math.max(1, mult * mag);
+    const lo = Math.floor(mn / step) * step;
+    const hi = Math.ceil(mx / step) * step;
+
+    const yOf = v => padT + (hi - v) / (hi - lo) * plotH;
+    const zeroY = yOf(0);
+    const slot = plotW / n;
+    const barW = Math.max(12, Math.min(44, slot * 0.42));
+    const xOf = i => padL + slot * (i + 0.5);
+    const labelStep = Math.ceil(n / 12);
+
+    let grid = '', yLabels = '';
+    for (let v = lo; v <= hi + 1e-9; v += step) {
+      const y = yOf(v);
+      grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="#eef1f5" stroke-width="1"/>`;
+      yLabels += `<text x="${padL - 8}" y="${(y + 3.5).toFixed(1)}" text-anchor="end" font-size="11" fill="#9ca3af">${v < 0 ? '-¥' + Math.abs(Math.round(v)) : '¥' + Math.round(v)}</text>`;
+    }
+
+    let bars = '', xLabels = '', dots = '';
+    const pts = [];
+    weekly.forEach((w, i) => {
+      const p = Number(w.profit) || 0;
+      const cum = Number(w.cumulative) || 0;
+      const x = xOf(i);
+      const y1 = yOf(p);
+      const top = Math.min(zeroY, y1);
+      const h = Math.max(1.5, Math.abs(y1 - zeroY));
+      bars += `<rect x="${(x - barW / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${p >= 0 ? '#e57373' : '#81c784'}"/>`;
+
+      if (slot >= 34) {
+        const lab = (p < 0 ? '-' : '+') + Math.abs(p).toFixed(0);
+        const ly = p >= 0 ? top - 5 : top + h + 13;
+        bars += `<text x="${x.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" font-size="11" fill="#9ca3af">${lab}</text>`;
+      }
+      if (i % labelStep === 0 || i === n - 1) {
+        xLabels += `<text x="${x.toFixed(1)}" y="${padT + plotH + 18}" text-anchor="middle" font-size="11" fill="#6b7280">${String(w.week_start).slice(5)}</text>`;
+      }
+      const cy = yOf(cum);
+      pts.push(`${x.toFixed(1)},${cy.toFixed(1)}`);
+      dots += `<circle cx="${x.toFixed(1)}" cy="${cy.toFixed(1)}" r="3.5" fill="#f0b64a" stroke="#fff" stroke-width="1.5"/>`;
+    });
+
+    return `
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;" preserveAspectRatio="xMidYMid meet">
+        ${grid}
+        <line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${W - padR}" y2="${zeroY.toFixed(1)}" stroke="#c9d2dd" stroke-width="1" stroke-dasharray="4 4"/>
+        ${yLabels}
+        ${bars}
+        <polyline points="${pts.join(' ')}" fill="none" stroke="#e6a23c" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        ${dots}
+        ${xLabels}
+      </svg>
+    `;
+  },
+
+  // ================================================================
   //  标签页3：信息台账（按订单号分组展示入库/出库）
   // ================================================================
   async renderLedgerTab(system) {
@@ -1197,6 +1335,19 @@ const TransactionsModule = {
       }
 
       let html = '';
+
+      // ====== 盈亏仪表盘（只统计已出库的单，按出库日期归周）======
+      let dash = null;
+      if (this._dashData && this._dashSystem === system) {
+        dash = this._dashData;
+      } else {
+        try {
+          dash = await API.get(`/api/${system}/dashboard`);
+          this._dashData = dash;
+          this._dashSystem = system;
+        } catch (e) { dash = null; }
+      }
+      if (dash && dash.totals) html += this._renderLedgerDashboard(dash);
 
       // 全局筛选表单
       html += `
@@ -1371,6 +1522,7 @@ const TransactionsModule = {
       showToast('删除成功');
       // 清除缓存，重新加载
       this._ledgerData = null;
+      this._dashData = null;
       await this.renderLedgerTab(system);
     } catch (e) {
       showToast('删除失败: ' + e.message);
