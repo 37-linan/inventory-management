@@ -192,7 +192,22 @@ const TransactionsModule = {
       <div class="card" style="margin-top:16px;">
         <div class="card-header">
           <h3>入库记录表</h3>
-          <span style="font-size:12px;color:var(--text-light);" id="inbound-count-label">加载中...</span>
+          <div style="display:flex;align-items:center;gap:10px;margin-left:auto;">
+            <button id="inbound-filter-toggle" class="btn btn-sm btn-secondary filter-btn" onclick="TransactionsModule._toggleInboundFilter()">🔍 筛选</button>
+            <span style="font-size:12px;color:var(--text-light);" id="inbound-count-label">加载中...</span>
+          </div>
+        </div>
+        <div class="filter-panel" id="inbound-filter-panel" style="display:none;">
+          <div class="filter-row">
+            <span class="filter-label">筛选栏</span>
+            <span id="inbound-filter-bar" style="flex:1 1 220px;display:flex;gap:8px;"></span>
+            <button class="filter-clear" onclick="TransactionsModule._clearInboundFilter()">清除筛选</button>
+          </div>
+          <div class="filter-row">
+            <span class="filter-label">筛选条件</span>
+            <div class="filter-chips" id="inbound-filter-fields"></div>
+          </div>
+          <div class="filter-hint" id="inbound-filter-hint">点击「筛选条件」里的字段，就把筛选范围限定在该字段；不点则默认全字段搜索</div>
         </div>
         <div style="padding:8px 12px 0;font-size:12px;color:var(--text-secondary);">💡 登记数量、渠道、价格可以直接点击修改，改完自动重算库存与金额</div>
         <div class="card-body" style="padding:0;">
@@ -228,93 +243,258 @@ const TransactionsModule = {
 
   async _refreshInboundTable(system) {
     const tbody = document.getElementById('inbound-table-body');
-    const label = document.getElementById('inbound-count-label');
     if (!tbody) return;
+    this._inboundSystem = system;
     try {
       const records = await API.get(`/api/${system}/inbound`);
       const products = await API.get(`/api/${system}/products`);
-
-      // 按订单号分组
-      const groups = {};
-      records.forEach(r => {
-        const key = r.order_no || '（无单号）';
-        if (!groups[key]) groups[key] = [];
-        groups[key].push(r);
-      });
-      // 组内按时间倒序：最新入库的在上，先入库的在下
-      Object.values(groups).forEach(items => {
-        items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-      });
-      // 缓存统计用
-      this._groupStatsCache = {};
+      this._inboundAllRecords = records || [];
+      this._inboundProducts = products || [];
       // 缓存每条记录原始值，供行内编辑取用（避免把值拼进 onclick 里，渠道名带引号会出错）
       this._inboundRowCache = {};
-      records.forEach(r => { this._inboundRowCache[r.id] = r; });
-      // 组按最新时间倒序（最新单号在上）
-      const sortedKeys = Object.keys(groups).sort((a, b) => {
-        const ta = new Date(groups[a][0].created_at).getTime();
-        const tb = new Date(groups[b][0].created_at).getTime();
-        return tb - ta;
-      });
-      const groupCount = sortedKeys.length;
-      if (label) label.textContent = `共 ${records.length} 条记录 / ${groupCount} 个单号`;
-
-      if (records.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-light);padding:20px;">暂无入库记录</td></tr>';
-        return;
-      }
-
-      let html = '';
-      sortedKeys.forEach((orderNo, gi) => {
-        const items = groups[orderNo];
-        const totalQty = items.reduce((s, r) => s + parseFloat(r.quantity || 0), 0);
-        // 整单总金额 = 本单第一个商品填的金额（用户约定：整单金额填在第一个商品上，不乘数量）
-        const firstItem = [...items].sort((a, b) => a.id - b.id)[0];
-        const orderTotal = parseFloat(firstItem.purchase_price || 0);
-        const firstTime = items[0].created_at;
-        // 组头颜色：仅当本单所有商品标了同一种颜色才整单着色；单个商品标记只影响自己那行
-        const allSameColor = items.every(r => r.row_color && r.row_color === items[0].row_color);
-        const groupColor = allSameColor ? (items[0].row_color || '') : '';
-        const groupId = `inb-grp-${gi}`;
-        const cacheKey = `g${gi}`;
-        this._groupStatsCache[cacheKey] = items;
-
-        // 组头行：跨整行，显示订单号 + 汇总信息
-        html += `<tr class="group-header" style="cursor:pointer;background:${groupColor || '#eef2f7'};font-weight:600;" onclick="TransactionsModule._toggleGroupRows('${groupId}','${cacheKey}')">
-          <td colspan="10" style="padding:8px 12px;border-top:2px solid ${groupColor || 'transparent'};">
-            <span style="display:inline-block;width:14px;text-align:center;" id="${groupId}-icon">▾</span>
-            <span style="color:var(--primary);">📦 ${orderNo}</span>
-            <span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">${firstTime}</span>
-            <span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">商品 ${items.length} 种 · 总数量 ${this._fmtQty(totalQty)}</span>
-            ${orderTotal > 0 ? `<span style="color:var(--success);margin-left:12px;font-size:12px;font-weight:normal;">整单金额 ¥${orderTotal.toFixed(2)}</span>` : ''}
-            <button class="btn btn-sm btn-secondary" style="float:right;margin-left:6px;" onclick="event.stopPropagation();TransactionsModule._showGroupStats('${cacheKey}','${orderNo.replace(/'/g, "\\'")}')">📊 统计</button>
-            <button class="btn btn-sm btn-danger" style="float:right;" onclick="event.stopPropagation();TransactionsModule._deleteGroup('${cacheKey}','${orderNo.replace(/'/g, "\\'")}')">删除整单</button>
-          </td>
-        </tr>`;
-
-        // 明细行（每行用自己的标记颜色）
-        items.forEach(r => {
-          const p = products.find(x => x.code === r.product_code);
-          const rowColor = r.row_color || '';
-          html += `<tr class="${groupId}-rows ${rowColor ? 'row-color' : ''}" ${rowColor ? "style='--row-bg:" + rowColor + ";--row-bg-hover:" + rowColor + "'" : ''}>
-            <td>${this._renderColorCell(r.id, 'inbound', r.row_color)}</td>
-            <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
-            <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
-            <td>${p ? p.name : '-'}</td>
-            <td>${p ? (p.spec || '-') : '-'}</td>
-            <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','quantity',${r.id},this)" title="点击修改数量"><strong style="color:var(--success);">+${this._fmtQty(r.quantity)}</strong></td>
-            <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','channel',${r.id},this)" title="点击修改渠道"><span class="badge badge-inbound">${r.channel || '-'}</span></td>
-            <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','purchase_price',${r.id},this)" title="点击修改价格">${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>
-            <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">📷 图片查看</a>` : '-'}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteInbound('${system}',${r.id})">删除</button></td>
-          </tr>`;
-        });
-      });
-
-      tbody.innerHTML = html;
+      this._inboundAllRecords.forEach(r => { this._inboundRowCache[r.id] = r; });
+      await this._renderInboundFilterControls();
+      this._renderInboundRows();
     } catch (e) {
       tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--danger);padding:20px;">加载失败: ${e.message}</td></tr>`;
     }
+  },
+
+  // ===== 入库表筛选 =====
+  // 可用字段（就是入库记录表里显示的列）
+  _inboundFilterDefs() {
+    return [
+      { key: 'all', label: '全部字段' },
+      { key: 'product_code', label: '物品编码' },
+      { key: 'name', label: '物品名称' },
+      { key: 'spec', label: '规格' },
+      { key: 'quantity', label: '登记数量' },
+      { key: 'channel', label: '渠道' },
+      { key: 'purchase_price', label: '价格' },
+      { key: 'created_at', label: '登记日期时间' },
+      { key: 'marked', label: '标记' },
+      { key: 'order_no', label: '单号' }
+    ];
+  },
+
+  // 折叠/展开筛选面板
+  _toggleInboundFilter() {
+    const panel = document.getElementById('inbound-filter-panel');
+    const btn = document.getElementById('inbound-filter-toggle');
+    if (!panel) return;
+    const show = panel.style.display === 'none';
+    panel.style.display = show ? '' : 'none';
+    if (btn) btn.classList.toggle('active', show);
+    if (show) {
+      this._renderInboundFilterControls();
+      const input = document.getElementById('inbound-filter-input');
+      if (input) input.focus();
+    }
+  },
+
+  // 渲染筛选条件（字段胶囊）+ 筛选栏（输入框/下拉）
+  async _renderInboundFilterControls() {
+    const fieldsEl = document.getElementById('inbound-filter-fields');
+    const barEl = document.getElementById('inbound-filter-bar');
+    const hintEl = document.getElementById('inbound-filter-hint');
+    if (!fieldsEl || !barEl) return;
+
+    const f = this._inboundFilter || (this._inboundFilter = { field: 'all', keyword: '' });
+    const system = this._inboundSystem || 'main';
+
+    fieldsEl.innerHTML = this._inboundFilterDefs().map(d =>
+      `<span class="filter-chip${f.field === d.key ? ' active' : ''}" onclick="TransactionsModule._setInboundFilterField('${d.key}')">${d.label}</span>`
+    ).join('');
+
+    // 筛选栏：渠道 → 下拉选渠道；标记 → 下拉选已标记/未标记；其余 → 文本输入
+    if (f.field === 'channel' || f.field === 'marked') {
+      let opts = [];
+      if (f.field === 'channel') {
+        opts = await this._getChannelOptions(system);
+        if (barEl.__lastField !== 'channel') { f.keyword = ''; }
+      } else {
+        opts = ['已标记', '未标记'];
+        if (barEl.__lastField !== 'marked') { f.keyword = ''; }
+      }
+      barEl.innerHTML = `<select class="filter-input" id="inbound-filter-select" onchange="TransactionsModule._onInboundFilterInput(this.value)">
+        <option value="">全部${f.field === 'channel' ? '渠道' : '标记状态'}</option>
+        ${opts.map(o => `<option value="${o}"${String(f.keyword) === String(o) ? ' selected' : ''}>${o}</option>`).join('')}
+      </select>`;
+      barEl.__lastField = f.field;
+    } else {
+      if (barEl.__lastField && barEl.__lastField !== f.field) { f.keyword = ''; }
+      barEl.__lastField = f.field;
+      const ph = f.field === 'all'
+        ? '输入关键词，全字段筛选…（编码 / 名称 / 规格 / 渠道 / 数量 / 价格 / 日期）'
+        : `在「${(this._inboundFilterDefs().find(d => d.key === f.field) || {}).label || ''}」中筛选…`;
+      barEl.innerHTML = `<input type="text" class="filter-input" id="inbound-filter-input" placeholder="${ph}"
+        value="${String(f.keyword || '').replace(/"/g, '&quot;')}"
+        oninput="TransactionsModule._onInboundFilterInput(this.value)">`;
+    }
+
+    if (hintEl) {
+      hintEl.textContent = f.field === 'all'
+        ? '点击「筛选条件」里的字段，就把筛选范围限定在该字段；不点则默认全字段搜索'
+        : `当前只在「${(this._inboundFilterDefs().find(d => d.key === f.field) || {}).label}」这个字段里筛选（再点一次「全部字段」可恢复全字段搜索）`;
+    }
+  },
+
+  // 点击字段胶囊 → 限定筛选范围
+  _setInboundFilterField(key) {
+    this._inboundFilter = this._inboundFilter || { field: 'all', keyword: '' };
+    if (this._inboundFilter.field === key) key = 'all';
+    this._inboundFilter.field = key;
+    this._inboundFilter.keyword = '';
+    this._renderInboundFilterControls().then(() => this._renderInboundRows());
+  },
+
+  // 输入/选择关键词 → 只重绘表格，不重建控件（否则输入框会失焦）
+  _onInboundFilterInput(value) {
+    this._inboundFilter = this._inboundFilter || { field: 'all', keyword: '' };
+    this._inboundFilter.keyword = value || '';
+    clearTimeout(this._inboundFilterTimer);
+    this._inboundFilterTimer = setTimeout(() => this._renderInboundRows(), 180);
+  },
+
+  // 清除筛选（回到全部字段 + 清空关键词）
+  _clearInboundFilter() {
+    this._inboundFilter = { field: 'all', keyword: '' };
+    const barEl = document.getElementById('inbound-filter-bar');
+    if (barEl) barEl.__lastField = null;
+    this._renderInboundFilterControls().then(() => this._renderInboundRows());
+  },
+
+  // 单条记录是否命中筛选
+  _matchInboundFilter(r, products, f) {
+    const kw = String((f && f.keyword) || '').trim().toLowerCase();
+    if (!kw) return true;
+    const p = products.find(x => x.code === r.product_code);
+    const vals = {
+      order_no: String(r.order_no || ''),
+      product_code: String(r.product_code || ''),
+      name: p ? String(p.name || '') : '',
+      spec: p ? String(p.spec || '') : '',
+      quantity: String(r.quantity == null ? '' : r.quantity),
+      channel: String(r.channel || ''),
+      purchase_price: String(r.purchase_price == null ? '' : r.purchase_price),
+      created_at: `${this._fmtDateTime(r.created_at)} ${String(r.created_at || '')}`,
+      marked: r.row_color ? '已标记' : '未标记'
+    };
+    if (!f.field || f.field === 'all') {
+      return Object.keys(vals).some(k => vals[k].toLowerCase().includes(kw));
+    }
+    const v = vals[f.field];
+    return v === undefined ? false : String(v).toLowerCase().includes(kw);
+  },
+
+  // 只重绘表格主体（筛选变化时用，不重新请求接口）
+  _renderInboundRows() {
+    const tbody = document.getElementById('inbound-table-body');
+    const label = document.getElementById('inbound-count-label');
+    if (!tbody) return;
+    const system = this._inboundSystem || 'main';
+    const all = this._inboundAllRecords || [];
+    const products = this._inboundProducts || [];
+    const f = this._inboundFilter || { field: 'all', keyword: '' };
+    const filtering = !!(f.keyword && String(f.keyword).trim());
+
+    const records = filtering ? all.filter(r => this._matchInboundFilter(r, products, f)) : all;
+
+    // 每个单号原本有多少条（用于筛选后显示"本单共 N 条"）
+    const orderTotals = {};
+    all.forEach(r => {
+      const k = r.order_no || '（无单号）';
+      orderTotals[k] = (orderTotals[k] || 0) + 1;
+    });
+
+    // 按订单号分组
+    const groups = {};
+    records.forEach(r => {
+      const key = r.order_no || '（无单号）';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(r);
+    });
+    // 组内按时间倒序：最新入库的在上，先入库的在下
+    Object.values(groups).forEach(items => {
+      items.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    });
+    // 缓存统计用
+    this._groupStatsCache = {};
+    // 组按最新时间倒序（最新单号在上）
+    const sortedKeys = Object.keys(groups).sort((a, b) => {
+      const ta = new Date(groups[a][0].created_at).getTime();
+      const tb = new Date(groups[b][0].created_at).getTime();
+      return tb - ta;
+    });
+
+    if (label) {
+      label.textContent = filtering
+        ? `筛选出 ${records.length} / 共 ${all.length} 条记录 · ${sortedKeys.length} 个单号`
+        : `共 ${all.length} 条记录 / ${sortedKeys.length} 个单号`;
+    }
+
+    if (all.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--text-light);padding:20px;">暂无入库记录</td></tr>';
+      return;
+    }
+    if (records.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--text-light);padding:24px;">
+        没有符合筛选条件的记录
+        <div style="margin-top:10px;"><button class="btn btn-sm btn-secondary" onclick="TransactionsModule._clearInboundFilter()">清除筛选</button></div>
+      </td></tr>`;
+      return;
+    }
+
+    let html = '';
+    sortedKeys.forEach((orderNo, gi) => {
+      const items = groups[orderNo];
+      const totalQty = items.reduce((s, r) => s + parseFloat(r.quantity || 0), 0);
+      // 整单总金额 = 本单第一个商品填的金额（用户约定：整单金额填在第一个商品上，不乘数量）
+      const firstItem = [...items].sort((a, b) => a.id - b.id)[0];
+      const orderTotal = parseFloat(firstItem.purchase_price || 0);
+      const firstTime = items[0].created_at;
+      // 组头颜色：仅当本单所有商品标了同一种颜色才整单着色；单个商品标记只影响自己那行
+      const allSameColor = items.every(r => r.row_color && r.row_color === items[0].row_color);
+      const groupColor = allSameColor ? (items[0].row_color || '') : '';
+      const groupId = `inb-grp-${gi}`;
+      const cacheKey = `g${gi}`;
+      this._groupStatsCache[cacheKey] = items;
+
+      // 组头行：跨整行，显示订单号 + 汇总信息
+      html += `<tr class="group-header" style="cursor:pointer;background:${groupColor || '#eef2f7'};font-weight:600;" onclick="TransactionsModule._toggleGroupRows('${groupId}','${cacheKey}')">
+        <td colspan="10" style="padding:8px 12px;border-top:2px solid ${groupColor || 'transparent'};">
+          <span style="display:inline-block;width:14px;text-align:center;" id="${groupId}-icon">▾</span>
+          <span style="color:var(--primary);">📦 ${orderNo}</span>
+          <span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">${firstTime}</span>
+          ${filtering
+            ? `<span style="color:var(--warning);margin-left:12px;font-size:12px;font-weight:normal;">命中 ${items.length} 条 · 本单共 ${orderTotals[orderNo] || items.length} 条</span>`
+            : `<span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">商品 ${items.length} 种 · 总数量 ${this._fmtQty(totalQty)}</span>`}
+          ${orderTotal > 0 ? `<span style="color:var(--success);margin-left:12px;font-size:12px;font-weight:normal;">整单金额 ¥${orderTotal.toFixed(2)}</span>` : ''}
+          <button class="btn btn-sm btn-secondary" style="float:right;margin-left:6px;" onclick="event.stopPropagation();TransactionsModule._showGroupStats('${cacheKey}','${orderNo.replace(/'/g, "\\'")}')">📊 统计</button>
+          <button class="btn btn-sm btn-danger" style="float:right;" onclick="event.stopPropagation();TransactionsModule._deleteGroup('${cacheKey}','${orderNo.replace(/'/g, "\\'")}')">删除整单</button>
+        </td>
+      </tr>`;
+
+      // 明细行（每行用自己的标记颜色）
+      items.forEach(r => {
+        const p = products.find(x => x.code === r.product_code);
+        const rowColor = r.row_color || '';
+        html += `<tr class="${groupId}-rows ${rowColor ? 'row-color' : ''}" ${rowColor ? "style='--row-bg:" + rowColor + ";--row-bg-hover:" + rowColor + "'" : ''}>
+          <td>${this._renderColorCell(r.id, 'inbound', r.row_color)}</td>
+          <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
+          <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
+          <td>${p ? p.name : '-'}</td>
+          <td>${p ? (p.spec || '-') : '-'}</td>
+          <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','quantity',${r.id},this)" title="点击修改数量"><strong style="color:var(--success);">+${this._fmtQty(r.quantity)}</strong></td>
+          <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','channel',${r.id},this)" title="点击修改渠道"><span class="badge badge-inbound">${r.channel || '-'}</span></td>
+          <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','purchase_price',${r.id},this)" title="点击修改价格">${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>
+          <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">📷 图片查看</a>` : '-'}</td>
+          <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteInbound('${system}',${r.id})">删除</button></td>
+        </tr>`;
+      });
+    });
+
+    tbody.innerHTML = html;
   },
 
   // 折叠/展开单号组
