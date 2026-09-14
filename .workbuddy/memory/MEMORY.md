@@ -48,7 +48,7 @@
 1. 本地改代码 → 推 GitHub
 2. **直接 scp 上传（比 curl 拉 GitHub 稳，大陆网络下 GitHub raw 常超时）**：
    `scp -i C:/Users/nan/.workbuddy/tencent-key.pem -o StrictHostKeyChecking=no <本地文件> ubuntu@211.159.186.87:/home/ubuntu/inventory-app/<同名路径>`
-3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v14）
+3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v15）
    - SW 策略已改为：HTML 文档 + `.js/.css` 网络优先，图标/manifest 缓存优先，并加了 skipWaiting/clients.claim
    - 所以**不再需要**手工加 `index.html?` 版本号，但 CACHE_NAME 仍要升，否则 precache 列表不更新
 4. 只改前端静态文件不需要重启；改了 `server.js`/`routes/` 才 `pm2 restart inventory-app`
@@ -83,8 +83,18 @@
 
 ## 单利润规则（2026-08 定稿）
 - 成本 = 整单金额（首商品 purchase_price）
-- 售价 = 出库次日(D+1)录的价；次日没录 → 用出库日当天/之前最近价（23:30自动沿用价），不往后找
+- 售价 = 出库次日(D+1)录的价；次日没录 → 用出库日当天/之前最近价（23:30自动沿用价），**不往后找**
 - 可随时用大图"✏️ 修改行情"改某天价格，利润自动重算（order-profit 实时计算）
+
+## 「待行情」= 亏损假象 + 补录方式（2026-09-14）
+- **现象**：某单显示亏损，明细里部分商品状态是「待行情」、销售额按 ¥0 计
+- **根因**：`main_price_history` 里该编码**没有 date <= 出库日 的记录**（只有出库日之后录的价，
+  而规则"不往后找"→ 取不到 → 0）。注意回退成功时显示的"次日: 08-26"其实是**实际取价日**，不是字面次日
+- **修法**：给该编码补一条行情，日期填 **出库日**（走回退分支）或 **次日**（走优先分支）都行，值一样结果一样
+- **入口（2026-09-14 新增，最省事）**：单利润明细弹窗里每个已出库商品后的按钮
+  「补录行情」（缺价）/「改行情」（已有价）→ `transactions.js _showBackfillPrice(idx) / _saveBackfillPrice(idx)`
+  日期自动带出库日；保存即 `POST /api/main/price-history` 并重算
+- 老入口仍在：产品信息表 → 点商品行情大图 → ✏️ 修改行情
 
 ## 技术栈
 - Node.js 22.23.2 (server.js)
