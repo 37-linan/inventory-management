@@ -1183,6 +1183,9 @@ const TransactionsModule = {
 
   _renderLedgerDashboard(dash) {
     const t = dash.totals || {};
+    // 缓存明细，供「总投入」弹窗使用（接口已返回 orders，不必再请求一次）
+    this._dashOrders = dash.orders || [];
+    this._dashTotals = t;
     const profit = Number(t.profit) || 0;
     const rate = Number(t.rate) || 0;
     const UP = '#c62828';    // 盈利（红）
@@ -1190,7 +1193,7 @@ const TransactionsModule = {
     const pnlColor = profit >= 0 ? UP : DOWN;
 
     const cards = [
-      { label: '总投入', value: this._fmtMoney(t.invest), color: 'var(--text)', sub: `已出库 ${t.order_count || 0} 单的采购本金` },
+      { label: '总投入', value: this._fmtMoney(t.invest), color: 'var(--text)', sub: `已出库 ${t.order_count || 0} 单的采购本金`, click: 'TransactionsModule._showInvestDetail()', hint: '点击查看明细' },
       { label: '总收益', value: this._fmtMoney(t.revenue), color: 'var(--text)', sub: '已出库部分按行情价计' },
       { label: '净盈亏', value: this._fmtMoney(profit), color: pnlColor, sub: '总收益 − 总投入' },
       { label: '盈亏率', value: (rate > 0 ? '+' : '') + rate.toFixed(1) + '%', color: pnlColor, sub: '净盈亏 ÷ 总投入' }
@@ -1209,8 +1212,11 @@ const TransactionsModule = {
         <div class="card-body">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">
             ${cards.map(c => `
-              <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;">
-                <div style="font-size:11px;color:var(--text-light);margin-bottom:6px;">${c.label}</div>
+              <div ${c.click ? `class="dash-card-clickable" onclick="${c.click}" title="点击查看这个数字由哪些单组成"` : ''} style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;${c.click ? 'cursor:pointer;' : ''}">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px;margin-bottom:6px;">
+                  <span style="font-size:11px;color:var(--text-light);">${c.label}</span>
+                  ${c.hint ? `<span style="font-size:10px;color:var(--primary);white-space:nowrap;">${c.hint}</span>` : ''}
+                </div>
                 <div style="font-size:22px;font-weight:600;line-height:1.25;color:${c.color};">${c.value}</div>
                 <div style="font-size:11px;color:var(--text-light);margin-top:6px;">${c.sub}</div>
               </div>`).join('')}
@@ -1221,6 +1227,72 @@ const TransactionsModule = {
             ${this._renderPnlChart(dash.weekly || [])}
             <div style="font-size:11px;color:var(--text-light);margin-top:6px;">柱：当周盈亏（红＝盈利 / 绿＝亏损）　金色折线：累计盈亏</div>
           </div>
+        </div>
+      </div>
+    `;
+  },
+
+  // 「总投入」点击 → 列出这个数字由哪些单组成
+  _showInvestDetail() {
+    const orders = this._dashOrders || [];
+    const t = this._dashTotals || {};
+    if (orders.length === 0) { showToast('暂无已出库的单'); return; }
+
+    // 按出库日期倒序（最新的在上），同日按单号
+    const sorted = [...orders].sort((a, b) => {
+      const da = a.out_date || '', db = b.out_date || '';
+      if (da !== db) return da < db ? 1 : -1;
+      return String(a.order_no) < String(b.order_no) ? 1 : -1;
+    });
+
+    const rows = sorted.map((o, i) => {
+      const pnl = Number(o.profit) || 0;
+      const color = pnl >= 0 ? '#c62828' : '#2e7d32';   // 盈利红 / 亏损绿
+      return `<tr>
+        <td style="text-align:center;color:var(--text-light);">${i + 1}</td>
+        <td style="font-size:12px;">${o.order_no}</td>
+        <td style="text-align:right;">${this._fmtMoney(o.cost)}</td>
+        <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(o.sale)}</td>
+        <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
+        <td style="text-align:center;font-size:12px;color:var(--text-secondary);white-space:nowrap;">${o.out_date || '-'}</td>
+      </tr>`;
+    }).join('');
+
+    showModal('总投入 · 明细');
+    document.getElementById('modal-body').innerHTML = `
+      <div style="padding:4px 0 12px;">
+        <div style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;">
+          <div style="font-size:12px;color:var(--text-secondary);">总投入 = 下面这 ${orders.length} 个「已出库」单号的采购本金之和</div>
+          <div style="font-size:22px;font-weight:600;color:var(--primary);margin-top:6px;">${this._fmtMoney(t.invest)}</div>
+          <div style="font-size:11px;color:var(--text-light);margin-top:6px;">每单成本取该单第一个商品填的整单金额，与「单利润」算法一致</div>
+        </div>
+        <div class="table-wrapper" style="max-height:52vh;overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:34px;text-align:center;">#</th>
+                <th>单号</th>
+                <th style="text-align:right;">采购本金</th>
+                <th style="text-align:right;">收益</th>
+                <th style="text-align:right;">盈亏</th>
+                <th style="text-align:center;">出库日期</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+            <tfoot>
+              <tr style="font-weight:600;background:var(--bg);">
+                <td colspan="2">合计 ${orders.length} 单</td>
+                <td style="text-align:right;">${this._fmtMoney(t.invest)}</td>
+                <td style="text-align:right;">${this._fmtMoney(t.revenue)}</td>
+                <td style="text-align:right;color:${Number(t.profit) >= 0 ? '#c62828' : '#2e7d32'};">${this._fmtMoney(t.profit)}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div style="font-size:11px;color:var(--text-light);margin-top:10px;">尚未出库的单不计入「总投入」；等它们出库后会自动进这张表。</div>
+        <div style="margin-top:14px;text-align:right;">
+          <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
         </div>
       </div>
     `;
