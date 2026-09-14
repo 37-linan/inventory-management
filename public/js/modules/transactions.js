@@ -193,7 +193,7 @@ const TransactionsModule = {
         <div class="card-header">
           <h3>入库记录表</h3>
           <div style="display:flex;align-items:center;gap:10px;margin-left:auto;">
-            <button id="inbound-filter-toggle" class="btn btn-sm btn-secondary filter-btn" onclick="TransactionsModule._toggleInboundFilter()">🔍 筛选</button>
+            <button id="inbound-filter-toggle" class="btn btn-sm btn-secondary filter-btn" onclick="TransactionsModule._toggleInboundFilter()">筛选</button>
             <span style="font-size:12px;color:var(--text-light);" id="inbound-count-label">加载中...</span>
           </div>
         </div>
@@ -488,7 +488,7 @@ const TransactionsModule = {
           <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','quantity',${r.id},this)" title="点击修改数量"><strong style="color:var(--success);">+${this._fmtQty(r.quantity)}</strong></td>
           <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','channel',${r.id},this)" title="点击修改渠道"><span class="badge badge-inbound">${r.channel || '-'}</span></td>
           <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','purchase_price',${r.id},this)" title="点击修改价格">${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>
-          <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">📷 图片查看</a>` : '-'}</td>
+          <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">图片查看</a>` : '-'}</td>
           <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteInbound('${system}',${r.id})">删除</button></td>
         </tr>`;
       });
@@ -1025,7 +1025,7 @@ const TransactionsModule = {
           <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
           <td>${r.location || '-'}</td>
           <td>${r.order_no ? '<span style="color:var(--primary);font-size:12px;">📦 ' + r.order_no + '</span>' : '<span style="color:#bbb;font-size:11px;">未填</span>'}</td>
-          <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">📷 图片查看</a>` : '-'}</td>
+          <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">图片查看</a>` : '-'}</td>
           <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteOutbound('${system}',${r.id})">删除</button></td>
         </tr>`;
       }).join('');
