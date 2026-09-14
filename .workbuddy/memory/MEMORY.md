@@ -36,7 +36,7 @@
 1. 本地改代码 → 推 GitHub
 2. **直接 scp 上传（比 curl 拉 GitHub 稳，大陆网络下 GitHub raw 常超时）**：
    `scp -i C:/Users/nan/.workbuddy/tencent-key.pem -o StrictHostKeyChecking=no <本地文件> ubuntu@211.159.186.87:/home/ubuntu/inventory-app/<同名路径>`
-3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v9）
+3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v13）
    - SW 策略已改为：HTML 文档 + `.js/.css` 网络优先，图标/manifest 缓存优先，并加了 skipWaiting/clients.claim
    - 所以**不再需要**手工加 `index.html?` 版本号，但 CACHE_NAME 仍要升，否则 precache 列表不更新
 4. 只改前端静态文件不需要重启；改了 `server.js`/`routes/` 才 `pm2 restart inventory-app`
