@@ -37,6 +37,9 @@
      ④按**出库日期**归周（**周一起**）
    - 接口: `GET /api/main/dashboard` → `totals{invest,revenue,profit,rate,pending_count,pending_invest}` + `weekly[]` + `orders[]`
    - 前端: `transactions.js _renderLedgerDashboard() / _renderPnlChart()`（手绘 SVG，零依赖，不引 echarts）
+   - **「总投入」卡片可点击** → `_showInvestDetail()` 弹窗列出构成该数字的已出库单
+     （#/单号/采购本金/收益/盈亏/出库日期 + 合计行），复用 dashboard 接口返回的 `orders`，**无额外接口**
+   - 卡片数组支持可选 `click` / `hint` 字段；有 click 就加 `class="dash-card-clickable"` + 显示"点击查看明细"
    - 着色：**盈利红 / 亏损绿**（国内习惯）
    - ⚠️ 后端聚合时日期要用 `to_char(...)` 出字符串再比大小，不能 `String(pgDate)`
    - 目前只有 main 系统有该接口，douyin 未接
@@ -45,7 +48,7 @@
 1. 本地改代码 → 推 GitHub
 2. **直接 scp 上传（比 curl 拉 GitHub 稳，大陆网络下 GitHub raw 常超时）**：
    `scp -i C:/Users/nan/.workbuddy/tencent-key.pem -o StrictHostKeyChecking=no <本地文件> ubuntu@211.159.186.87:/home/ubuntu/inventory-app/<同名路径>`
-3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v13）
+3. 改了 `public/` 下的前端文件 → **必须升 `public/sw.js` 的 CACHE_NAME**（现为 v14）
    - SW 策略已改为：HTML 文档 + `.js/.css` 网络优先，图标/manifest 缓存优先，并加了 skipWaiting/clients.claim
    - 所以**不再需要**手工加 `index.html?` 版本号，但 CACHE_NAME 仍要升，否则 precache 列表不更新
 4. 只改前端静态文件不需要重启；改了 `server.js`/`routes/` 才 `pm2 restart inventory-app`
