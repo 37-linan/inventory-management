@@ -1261,6 +1261,7 @@ const TransactionsModule = {
     // 缓存明细，供「总投入」弹窗使用（接口已返回 orders，不必再请求一次）
     this._dashOrders = dash.orders || [];
     this._dashTotals = t;
+    this._dashByDevice = dash.by_device || [];
     const profit = Number(t.profit) || 0;
     const rate = Number(t.rate) || 0;
     const UP = '#c62828';    // 盈利（红）
@@ -1307,14 +1308,46 @@ const TransactionsModule = {
     `;
   },
 
-  // 「总投入」点击 → 列出这个数字由哪些单组成
+  // 「总投入」点击 → 列出这个数字由哪些单组成，并可按「下单设备/下级」分组
   _showInvestDetail() {
     const orders = this._dashOrders || [];
-    const t = this._dashTotals || {};
     if (orders.length === 0) { showToast('暂无已出库的单'); return; }
+    this._investDevice = '';   // '' = 全部
+    this._renderInvestDetail();
+  },
+
+  // 选择某个下单设备/下级（'' = 全部）
+  _pickInvestDevice(dev) {
+    this._investDevice = dev || '';
+    this._renderInvestDetail();
+  },
+
+  _renderInvestDetail() {
+    const orders = this._dashOrders || [];
+    const t = this._dashTotals || {};
+    const cur = this._investDevice || '';
+
+    // 按下单设备/下级汇总（优先用接口返回的 by_device，缺失时前端兜底计算）
+    let devices = this._dashByDevice || [];
+    if (!devices.length) {
+      const m = {};
+      orders.forEach(o => {
+        const k = (o.device || '').trim() || '（未填）';
+        const d = m[k] || (m[k] = { device: k, invest: 0, revenue: 0, profit: 0, orders: 0 });
+        d.invest += Number(o.cost) || 0; d.revenue += Number(o.sale) || 0;
+        d.profit += Number(o.profit) || 0; d.orders++;
+      });
+      devices = Object.values(m).sort((a, b) => b.invest - a.invest);
+    }
+
+    // 当前范围
+    const scope = cur ? orders.filter(o => (((o.device || '').trim()) || '（未填）') === cur) : orders;
+    const scopeInvest = scope.reduce((s, o) => s + (Number(o.cost) || 0), 0);
+    const scopeRevenue = scope.reduce((s, o) => s + (Number(o.sale) || 0), 0);
+    const scopeProfit = scopeRevenue - scopeInvest;
 
     // 按出库日期倒序（最新的在上），同日按单号
-    const sorted = [...orders].sort((a, b) => {
+    const sorted = [...scope].sort((a, b) => {
       const da = a.out_date || '', db = b.out_date || '';
       if (da !== db) return da < db ? 1 : -1;
       return String(a.order_no) < String(b.order_no) ? 1 : -1;
@@ -1323,9 +1356,11 @@ const TransactionsModule = {
     const rows = sorted.map((o, i) => {
       const pnl = Number(o.profit) || 0;
       const color = pnl >= 0 ? '#c62828' : '#2e7d32';   // 盈利红 / 亏损绿
+      const dev = ((o.device || '').trim()) || '（未填）';
       return `<tr>
         <td style="text-align:center;color:var(--text-light);">${i + 1}</td>
         <td style="font-size:12px;">${o.order_no}</td>
+        <td style="font-size:12px;color:var(--text-secondary);white-space:nowrap;">${dev}</td>
         <td style="text-align:right;">${this._fmtMoney(o.cost)}</td>
         <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(o.sale)}</td>
         <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
@@ -1333,20 +1368,38 @@ const TransactionsModule = {
       </tr>`;
     }).join('');
 
-    showModal('总投入 · 明细');
+    // 分组胶囊：全部 + 每个设备/下级（带各自的投入金额）
+    const chips = [
+      `<span class="filter-chip${cur === '' ? ' active' : ''}" onclick="TransactionsModule._pickInvestDevice('')">全部 · ${devices.length} 个 · ${this._fmtMoney(t.invest)}</span>`
+    ].concat(devices.map(d => {
+      const label = d.device + ' · ' + this._fmtMoney(d.invest);
+      const esc = String(d.device).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      return `<span class="filter-chip${cur === String(d.device) ? ' active' : ''}" onclick="TransactionsModule._pickInvestDevice('${esc}')">${label}</span>`;
+    })).join('');
+
+    showModal(cur ? `总投入 · ${cur}` : '总投入 · 明细');
     document.getElementById('modal-body').innerHTML = `
       <div style="padding:4px 0 12px;">
         <div style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;">
-          <div style="font-size:12px;color:var(--text-secondary);">总投入 = 下面这 ${orders.length} 个「已出库」单号的采购本金之和</div>
-          <div style="font-size:22px;font-weight:600;color:var(--primary);margin-top:6px;">${this._fmtMoney(t.invest)}</div>
+          <div style="font-size:12px;color:var(--text-secondary);">${cur
+            ? `「${cur}」已出库 ${scope.length} 单的采购本金之和`
+            : `总投入 = 下面这 ${orders.length} 个「已出库」单号的采购本金之和`}</div>
+          <div style="font-size:22px;font-weight:600;color:var(--primary);margin-top:6px;">${this._fmtMoney(scopeInvest)}</div>
           <div style="font-size:11px;color:var(--text-light);margin-top:6px;">每单成本取该单第一个商品填的整单金额，与「单利润」算法一致</div>
         </div>
-        <div class="table-wrapper" style="max-height:52vh;overflow:auto;">
+
+        <div style="margin-bottom:12px;">
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">按下单设备/下级分开看</div>
+          <div class="filter-chips">${chips}</div>
+        </div>
+
+        <div class="table-wrapper" style="max-height:46vh;overflow:auto;">
           <table>
             <thead>
               <tr>
                 <th style="width:34px;text-align:center;">#</th>
                 <th>单号</th>
+                <th>下单设备/下级</th>
                 <th style="text-align:right;">采购本金</th>
                 <th style="text-align:right;">收益</th>
                 <th style="text-align:right;">盈亏</th>
@@ -1356,16 +1409,16 @@ const TransactionsModule = {
             <tbody>${rows}</tbody>
             <tfoot>
               <tr style="font-weight:600;background:var(--bg);">
-                <td colspan="2">合计 ${orders.length} 单</td>
-                <td style="text-align:right;">${this._fmtMoney(t.invest)}</td>
-                <td style="text-align:right;">${this._fmtMoney(t.revenue)}</td>
-                <td style="text-align:right;color:${Number(t.profit) >= 0 ? '#c62828' : '#2e7d32'};">${this._fmtMoney(t.profit)}</td>
+                <td colspan="3">合计 ${scope.length} 单${cur ? ` · ${cur}` : ''}</td>
+                <td style="text-align:right;">${this._fmtMoney(scopeInvest)}</td>
+                <td style="text-align:right;">${this._fmtMoney(scopeRevenue)}</td>
+                <td style="text-align:right;color:${scopeProfit >= 0 ? '#c62828' : '#2e7d32'};">${this._fmtMoney(scopeProfit)}</td>
                 <td></td>
               </tr>
             </tfoot>
           </table>
         </div>
-        <div style="font-size:11px;color:var(--text-light);margin-top:10px;">尚未出库的单不计入「总投入」；等它们出库后会自动进这张表。</div>
+        <div style="font-size:11px;color:var(--text-light);margin-top:10px;">尚未出库的单不计入「总投入」；等它们出库后会自动进这张表。「下单设备/下级」取入库时填的那一栏，没填的归到「（未填）」。</div>
         <div style="margin-top:14px;text-align:right;">
           <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
         </div>

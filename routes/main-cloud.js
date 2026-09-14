@@ -636,7 +636,7 @@ module.exports = function(db) {
   router.get('/dashboard', async (req, res) => {
     try {
       const inRes = await db.query(
-        'SELECT id, order_no, product_code, quantity, purchase_price FROM main_inbound ORDER BY id ASC'
+        "SELECT id, order_no, product_code, quantity, purchase_price, COALESCE(NULLIF(device,''),'') AS device FROM main_inbound ORDER BY id ASC"
       );
 
       // 出库归属：按编码「先进先出」分配到具体入库批次（详见文件顶部 computeOutboundAlloc）
@@ -655,11 +655,15 @@ module.exports = function(db) {
 
       let invest = 0, revenue = 0, pendingInvest = 0, pendingCount = 0, outCount = 0;
       const weekMap = {};
+      const devMap = {};
       const orderList = [];
 
       Object.keys(orders).forEach(orderNo => {
         const items = orders[orderNo];
         const cost = Number(items[0].purchase_price) || 0;   // 整单金额：取首商品
+        // 下单设备/下级：单内一般一致，取本单首个填了值的商品
+        const devItem = items.find(x => String(x.device || '').trim() !== '');
+        const device = devItem ? String(devItem.device).trim() : '';
         let sale = 0, hasOut = false, lastDay = '';
 
         items.forEach(it => {
@@ -678,7 +682,12 @@ module.exports = function(db) {
         invest += cost;
         revenue += sale;
         outCount++;
-        orderList.push({ order_no: orderNo, cost, sale, profit, out_date: lastDay || '' });
+        orderList.push({ order_no: orderNo, cost, sale, profit, out_date: lastDay || '', device });
+
+        // 按下单设备/下级汇总（只统计已出库单，与「总投入」口径一致）
+        const devKey = device || '（未填）';
+        const dv = devMap[devKey] || (devMap[devKey] = { device: devKey, invest: 0, revenue: 0, profit: 0, orders: 0 });
+        dv.invest += cost; dv.revenue += sale; dv.profit += profit; dv.orders++;
 
         // 归到自然周（周一为一周起点）
         const d = new Date((lastDay || '1970-01-01') + 'T00:00:00');
@@ -706,6 +715,15 @@ module.exports = function(db) {
         };
       });
 
+      // 按下单设备/下级汇总，投入降序
+      const byDevice = Object.keys(devMap).map(k => {
+        const d = devMap[k];
+        d.invest = Number(d.invest.toFixed(2));
+        d.revenue = Number(d.revenue.toFixed(2));
+        d.profit = Number(d.profit.toFixed(2));
+        return d;
+      }).sort((a, b) => b.invest - a.invest);
+
       res.json({
         success: true,
         totals: {
@@ -718,6 +736,7 @@ module.exports = function(db) {
           pending_invest: Number(pendingInvest.toFixed(2))
         },
         weekly,
+        by_device: byDevice,
         orders: orderList
       });
     } catch (e) {
