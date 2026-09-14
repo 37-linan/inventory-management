@@ -31,6 +31,15 @@
      否则每次输入都重新请求接口会卡、输入框会失焦
    - 前端: `transactions.js _inboundFilter / _renderInboundRows() / _matchInboundFilter()`
    - CSS: `style.css` 的 `.filter-*`（入库出库通用，出库表尚未接）
+9. **信息台账「盈亏总览」仪表盘**（2026-09-14）: 信息台账页顶部，4 指标卡 + 每周盈亏柱状图/累计折线
+   - **口径（用户拍板）**: ①只统计**已出库**的单号（未出库的仅在卡下注明单数与本金）
+     ②成本 = 首商品 purchase_price ③收益 = Σ 行情价×入库数量（行情价取法同单利润规则）
+     ④按**出库日期**归周（**周一起**）
+   - 接口: `GET /api/main/dashboard` → `totals{invest,revenue,profit,rate,pending_count,pending_invest}` + `weekly[]` + `orders[]`
+   - 前端: `transactions.js _renderLedgerDashboard() / _renderPnlChart()`（手绘 SVG，零依赖，不引 echarts）
+   - 着色：**盈利红 / 亏损绿**（国内习惯）
+   - ⚠️ 后端聚合时日期要用 `to_char(...)` 出字符串再比大小，不能 `String(pgDate)`
+   - 目前只有 main 系统有该接口，douyin 未接
 
 ## 部署流程（改代码）
 1. 本地改代码 → 推 GitHub
