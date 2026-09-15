@@ -1422,6 +1422,11 @@ const TransactionsModule = {
     }
     this._devList = devices;   // 供点击行时按下标取用（避免把设备名拼进 onclick）
 
+    // 盈亏率 = 盈亏 ÷ 投入（投入为 0 时显示 —）
+    const rateOf = (pnl, inv) => (Number(inv) || 0) > 0 ? (pnl / (Number(inv) || 0) * 100) : null;
+    const rateTxt = r => r === null ? '—'
+      : (Math.abs(r) < 0.05 ? '0.0%' : (r > 0 ? '+' : '') + r.toFixed(1) + '%');
+
     const rows = devices.map((d, i) => {
       const pnl = Number(d.profit) || 0;
       const color = pnl >= 0 ? '#c62828' : '#2e7d32';
@@ -1430,6 +1435,7 @@ const TransactionsModule = {
         <td style="text-align:right;font-weight:600;">${this._fmtMoney(d.invest)}</td>
         <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(d.revenue)}</td>
         <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
+        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${rateTxt(rateOf(pnl, d.invest))}</td>
         <td style="text-align:center;color:var(--text-secondary);">${d.orders}</td>
         <td style="text-align:center;color:var(--primary);font-size:12px;white-space:nowrap;">明细 ›</td>
       </tr>`;
@@ -1454,6 +1460,7 @@ const TransactionsModule = {
                 <th style="text-align:right;">投入</th>
                 <th style="text-align:right;">收益</th>
                 <th style="text-align:right;">盈亏</th>
+                <th style="text-align:right;">盈亏率</th>
                 <th style="text-align:center;">单数</th>
                 <th></th>
               </tr>
@@ -1465,6 +1472,7 @@ const TransactionsModule = {
                 <td style="text-align:right;">${this._fmtMoney(sumInvest)}</td>
                 <td style="text-align:right;">${this._fmtMoney(sumRevenue)}</td>
                 <td style="text-align:right;color:${sumProfit >= 0 ? '#c62828' : '#2e7d32'};">${this._fmtMoney(sumProfit)}</td>
+                <td style="text-align:right;color:${sumProfit >= 0 ? '#c62828' : '#2e7d32'};white-space:nowrap;">${rateTxt(rateOf(sumProfit, sumInvest))}</td>
                 <td style="text-align:center;">${sumOrders}</td>
                 <td></td>
               </tr>
