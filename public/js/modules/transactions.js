@@ -1373,13 +1373,13 @@ const TransactionsModule = {
         <div class="dash-card-clickable" style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;" onclick="TransactionsModule._showDeviceBreakdown()" title="点击按下单设备/下级拆分">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
             <div style="font-size:12px;color:var(--text-secondary);">总投入 = 下面这 ${orders.length} 个「已出库」单号的采购本金之和</div>
-            <span style="font-size:11px;color:var(--primary);white-space:nowrap;">按下单设备/下级查看 ›</span>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;white-space:nowrap;">
+              <span style="font-size:11px;color:var(--primary);">按下单设备/下级查看 ›</span>
+              <span style="font-size:11px;color:var(--primary);cursor:pointer;" onclick="event.stopPropagation(); TransactionsModule._showMonthBreakdown()" title="按月 + 下单设备/下级 两个条件看投入、收益、盈亏">按月查看 ›</span>
+            </div>
           </div>
           <div style="font-size:22px;font-weight:600;color:var(--primary);margin-top:6px;">${this._fmtMoney(t.invest)}</div>
           <div style="font-size:11px;color:var(--text-light);margin-top:6px;">每单成本取该单第一个商品填的整单金额，与「单利润」算法一致 · 点这块可按设备/下级拆分</div>
-          <div style="display:flex;justify-content:flex-end;margin-top:10px;">
-            <button class="btn btn-secondary btn-sm" style="white-space:nowrap;" onclick="event.stopPropagation(); TransactionsModule._showMonthBreakdown()" title="按月 + 下单设备/下级 两个条件看投入、收益、盈亏">按月查看 ›</button>
-          </div>
         </div>
         <div class="table-wrapper" style="max-height:46vh;overflow:auto;">
           <table>
