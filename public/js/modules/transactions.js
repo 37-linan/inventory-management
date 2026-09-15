@@ -1377,6 +1377,9 @@ const TransactionsModule = {
           </div>
           <div style="font-size:22px;font-weight:600;color:var(--primary);margin-top:6px;">${this._fmtMoney(t.invest)}</div>
           <div style="font-size:11px;color:var(--text-light);margin-top:6px;">每单成本取该单第一个商品填的整单金额，与「单利润」算法一致 · 点这块可按设备/下级拆分</div>
+          <div style="display:flex;justify-content:flex-end;margin-top:10px;">
+            <button class="btn btn-secondary btn-sm" style="white-space:nowrap;" onclick="event.stopPropagation(); TransactionsModule._showMonthBreakdown()" title="按月 + 下单设备/下级 两个条件看投入、收益、盈亏">按月查看 ›</button>
+          </div>
         </div>
         <div class="table-wrapper" style="max-height:46vh;overflow:auto;">
           <table>
@@ -1551,6 +1554,201 @@ const TransactionsModule = {
         </div>
         <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;">
           <button class="btn btn-secondary" onclick="TransactionsModule._showDeviceBreakdown()">‹ 返回设备/下级列表</button>
+          <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
+        </div>
+      </div>
+    `;
+  },
+
+  // 「按月查看」→ 第二层弹窗：出库月份 × 下单设备/下级 两个条件看投入
+  _showMonthBreakdown(monthKey) {
+    const orders = this._dashOrders || [];
+    if (!orders.length) { showToast('暂无已出库的单'); return; }
+    if (monthKey) this._mdMonth = monthKey;
+    if (!this._mdMonth) this._mdMonth = 'ALL';
+    showModal2('按月 · 设备投入');
+    this._renderMonthBreakdown();
+  },
+
+  _renderMonthBreakdown() {
+    const orders = this._dashOrders || [];
+
+    // 聚合：出库月份 → 下单设备/下级
+    const agg = {};
+    orders.forEach(o => {
+      const m = String(o.out_date || '').slice(0, 7) || '（无出库日期）';
+      const k = ((o.device || '').trim()) || '（未填）';
+      const a = agg[m] || (agg[m] = {});
+      const d = a[k] || (a[k] = { device: k, invest: 0, revenue: 0, profit: 0, orders: 0 });
+      d.invest += Number(o.cost) || 0;
+      d.revenue += Number(o.sale) || 0;
+      d.profit += Number(o.profit) || 0;
+      d.orders += 1;
+    });
+    const monthList = Object.keys(agg).sort().reverse();   // 新的月份在上
+    let cur = this._mdMonth || 'ALL';
+    if (cur !== 'ALL' && monthList.indexOf(cur) < 0) cur = 'ALL';
+    this._mdMonth = cur;
+
+    const flat = [];   // 行下标 → {month, device}，供点击钻取（不把名字拼进 onclick）
+    let html = '', sumInvest = 0, sumRevenue = 0, sumProfit = 0, sumOrders = 0;
+
+    (cur === 'ALL' ? monthList : [cur]).forEach(m => {
+      const devs = Object.values(agg[m] || {}).sort((a, b) => b.invest - a.invest);
+      if (!devs.length) return;
+      const mi = devs.reduce((s, d) => s + d.invest, 0);
+      const mr = devs.reduce((s, d) => s + d.revenue, 0);
+      const mo = devs.reduce((s, d) => s + d.orders, 0);
+      const mp = mr - mi;
+      sumInvest += mi; sumRevenue += mr; sumProfit += mp; sumOrders += mo;
+
+      html += `<tr style="background:var(--bg);">
+        <td colspan="6" style="padding-top:9px;padding-bottom:9px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+            <span style="font-weight:600;font-size:12px;">${m}<span style="font-weight:400;color:var(--text-light);font-size:11px;margin-left:6px;">${mo} 单</span></span>
+            <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">投入 <b style="color:var(--text);">${this._fmtMoney(mi)}</b>　盈亏 <b style="color:${mp >= 0 ? '#c62828' : '#2e7d32'};">${this._fmtMoney(mp)}</b></span>
+          </div>
+        </td>
+      </tr>`;
+
+      devs.forEach(d => {
+        const idx = flat.length;
+        flat.push({ month: m, device: d.device });
+        const pnl = Number(d.profit) || 0;
+        const color = pnl >= 0 ? '#c62828' : '#2e7d32';
+        html += `<tr style="cursor:pointer;" onclick="TransactionsModule._showMonthDeviceOrders(${idx})" title="点击查看 ${m} 这个设备/下级下面的单">
+          <td style="font-size:12px;font-weight:500;">${d.device}</td>
+          <td style="text-align:right;font-weight:600;">${this._fmtMoney(d.invest)}</td>
+          <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(d.revenue)}</td>
+          <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
+          <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._rateTxt(pnl, d.invest)}</td>
+          <td style="text-align:center;color:var(--text-secondary);">${d.orders}</td>
+        </tr>`;
+      });
+    });
+    this._mdRows = flat;
+
+    const chips = ['ALL', ...monthList].map(k =>
+      `<span class="filter-chip ${k === cur ? 'active' : ''}" onclick="TransactionsModule._mdMonth='${k}'; TransactionsModule._renderMonthBreakdown()">${k === 'ALL' ? '全部' : k}</span>`
+    ).join('');
+
+    const pnlColor = sumProfit >= 0 ? '#c62828' : '#2e7d32';
+
+    document.getElementById('modal-body-2').innerHTML = `
+      <div style="padding:4px 0 12px;">
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">
+          已出库 ${orders.length} 单，按<b>出库月份</b> + <b>下单设备/下级</b>两个条件拆分。点某一行可看它下面的单。
+        </div>
+        <div class="filter-chips" style="margin-bottom:10px;">${chips}</div>
+        <div class="table-wrapper" style="max-height:50vh;overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>下单设备/下级</th>
+                <th style="text-align:right;">投入</th>
+                <th style="text-align:right;">收益</th>
+                <th style="text-align:right;">盈亏</th>
+                <th style="text-align:right;">盈亏率</th>
+                <th style="text-align:center;">单数</th>
+              </tr>
+            </thead>
+            <tbody>${html}</tbody>
+            <tfoot>
+              <tr style="font-weight:600;background:var(--bg);">
+                <td>${cur === 'ALL' ? '合计' : cur + ' 合计'}</td>
+                <td style="text-align:right;">${this._fmtMoney(sumInvest)}</td>
+                <td style="text-align:right;">${this._fmtMoney(sumRevenue)}</td>
+                <td style="text-align:right;color:${pnlColor};">${this._fmtMoney(sumProfit)}</td>
+                <td style="text-align:right;color:${pnlColor};white-space:nowrap;">${this._rateTxt(sumProfit, sumInvest)}</td>
+                <td style="text-align:center;">${sumOrders}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div style="font-size:11px;color:var(--text-light);margin-top:10px;">月份按「出库日期」归月；只统计已出库的单，未出库的不出现在这里。</div>
+        <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;">
+          <button class="btn btn-secondary" onclick="TransactionsModule._showDeviceBreakdown()">‹ 按设备/下级看</button>
+          <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
+        </div>
+      </div>
+    `;
+  },
+
+  _backToMonthList() {
+    showModal2('按月 · 设备投入');
+    this._renderMonthBreakdown();
+  },
+
+  // 按月弹窗里点某一行 → 看「该月 + 该设备/下级」下面的单
+  _showMonthDeviceOrders(idx) {
+    const row = (this._mdRows || [])[idx];
+    if (!row) return;
+    const orders = (this._dashOrders || []).filter(o => {
+      const m = String(o.out_date || '').slice(0, 7) || '（无出库日期）';
+      const k = ((o.device || '').trim()) || '（未填）';
+      return m === row.month && k === row.device;
+    });
+    const sorted = [...orders].sort((a, b) => {
+      const da = a.out_date || '', db = b.out_date || '';
+      if (da !== db) return da < db ? 1 : -1;
+      return String(a.order_no) < String(b.order_no) ? 1 : -1;
+    });
+
+    const rows = sorted.map((o, i) => {
+      const pnl = Number(o.profit) || 0;
+      const color = pnl >= 0 ? '#c62828' : '#2e7d32';
+      return `<tr>
+        <td style="text-align:center;color:var(--text-light);">${i + 1}</td>
+        <td style="font-size:12px;">${o.order_no}</td>
+        <td style="text-align:right;">${this._fmtMoney(o.cost)}</td>
+        <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(o.sale)}</td>
+        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._fmtMoney(pnl)}${o.await_price ? '<span class="badge badge-stock-low" style="margin-left:5px;font-size:10px;" title="出库次日行情还没到，现在的收益是暂计，明天录价后自动重算">待次日</span>' : ''}</td>
+        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._rateTxt(pnl, o.cost)}</td>
+        <td style="text-align:center;font-size:12px;color:var(--text-secondary);white-space:nowrap;">${o.out_date || '-'}</td>
+      </tr>`;
+    }).join('');
+
+    const invest = orders.reduce((s, o) => s + (Number(o.cost) || 0), 0);
+    const revenue = orders.reduce((s, o) => s + (Number(o.sale) || 0), 0);
+    const profit = revenue - invest;
+    const color = profit >= 0 ? '#c62828' : '#2e7d32';
+
+    showModal2(row.month + ' · ' + row.device);
+    document.getElementById('modal-body-2').innerHTML = `
+      <div style="padding:4px 0 12px;">
+        <div style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;">
+          <div style="font-size:12px;color:var(--text-secondary);">「${row.month}」+「${row.device}」已出库 ${orders.length} 单的采购本金之和</div>
+          <div style="font-size:22px;font-weight:600;color:var(--primary);margin-top:6px;">${this._fmtMoney(invest)}</div>
+          <div style="font-size:11px;color:var(--text-light);margin-top:6px;">收益 ${this._fmtMoney(revenue)}　盈亏 <b style="color:${color};">${this._fmtMoney(profit)}</b>（${this._rateTxt(profit, invest)}）</div>
+        </div>
+        <div class="table-wrapper" style="max-height:44vh;overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:34px;text-align:center;">#</th>
+                <th>单号</th>
+                <th style="text-align:right;">采购本金</th>
+                <th style="text-align:right;">收益</th>
+                <th style="text-align:right;">盈亏</th>
+                <th style="text-align:right;">盈亏率</th>
+                <th style="text-align:center;">出库日期</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+            <tfoot>
+              <tr style="font-weight:600;background:var(--bg);">
+                <td colspan="2">合计 ${orders.length} 单</td>
+                <td style="text-align:right;">${this._fmtMoney(invest)}</td>
+                <td style="text-align:right;">${this._fmtMoney(revenue)}</td>
+                <td style="text-align:right;color:${color};">${this._fmtMoney(profit)}</td>
+                <td style="text-align:right;color:${color};white-space:nowrap;">${this._rateTxt(profit, invest)}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;">
+          <button class="btn btn-secondary" onclick="TransactionsModule._backToMonthList()">‹ 返回按月列表</button>
           <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
         </div>
       </div>
