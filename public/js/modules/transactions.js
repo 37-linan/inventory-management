@@ -1312,7 +1312,7 @@ const TransactionsModule = {
               ${pendingNote}
               ${awaitNote}
             </div>
-            <button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-top:2px;" onclick="TransactionsModule._showInvestDetail()" title="每一单的下单设备 / 采购本金 / 收益 / 盈亏 / 出库日期，点进去还能按下单设备拆分">查看每单明细 ›</button>
+            <button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-top:2px;" onclick="TransactionsModule._showInvestDetail()" title="每一单的下单设备 / 采购本金 / 收益 / 盈亏 / 出库日期，点进去还能按下单设备拆分">查看明细 ›</button>
           </div>
           <div style="margin-top:18px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;">每周盈亏走势</div>
