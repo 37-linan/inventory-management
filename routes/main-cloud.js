@@ -70,6 +70,12 @@ function nextDayOf(day) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+// 服务器「今天」（取数据库时区 Asia/Shanghai，别用 Node 本地时区自己算，容易差一天）
+async function todayOf(db) {
+  const r = await db.query("SELECT to_char(now(),'YYYY-MM-DD') AS t");
+  return r.rows[0].t;
+}
+
 // 行情价：① 出库日次日(D+1)优先 ② 次日没录 → 出库日当天/之前最近一天（不往后找）
 // 返回 { price, date, fromNextDay } 或 null
 function pickMarketPrice(priceMap, code, outDay) {
@@ -568,6 +574,7 @@ module.exports = function(db) {
       // 出库归属（FIFO）+ 行情表 + 商品名，一次性取出，避免在循环里 N 次查库
       const alloc = await computeOutboundAlloc(db);
       const priceMap = await loadPriceMap(db);
+      const today = await todayOf(db);
       const nameRes = await db.query('SELECT code, name FROM main_products ORDER BY id ASC');
       const nameMap = {};
       nameRes.rows.forEach(r => { nameMap[r.code] = r.name; });   // 后者覆盖前者 = 取最新一条
@@ -594,8 +601,13 @@ module.exports = function(db) {
           next_day: outDate ? nextDayOf(outDate) : '',   // 字面次日（出库日+1）
           price_date: '',                                 // 行情价实际取自哪一天
           next_day_price: 0,
-          sale: 0
+          sale: 0,
+          // 出库日次日还没到（今天才出库）→ 现在用的价只是暂计，
+          // 明天录了次日价会自动改用次日价重算，前端提示「待次日行情」
+          await_price: false
         };
+        // 只有真的出库了、且次日还没到来，才算「等次日行情」
+        row.await_price = !!(outQty > 0 && row.next_day && row.next_day > today);
 
         if (outQty > 0) {
           hasOut = true;
@@ -611,6 +623,8 @@ module.exports = function(db) {
         detail.push(row);
       }
 
+      const awaitRows = detail.filter(r => r.await_price);
+
       res.json({
         sale_price: Number(totalSale.toFixed(2)),
         cost_price: Number(totalCost.toFixed(2)),
@@ -618,6 +632,10 @@ module.exports = function(db) {
         has_out: hasOut,
         has_market: hasOut && totalSale > 0,
         completed: allOut,
+        await_price: awaitRows.length > 0,               // 本单是否在「等次日行情」
+        await_count: awaitRows.length,
+        await_date: awaitRows[0] ? awaitRows[0].next_day : '',   // 等的是哪一天
+        today,
         detail
       });
     } catch (e) {
@@ -643,6 +661,7 @@ module.exports = function(db) {
       // ——本单是否出库，取决于「本单这批货」有没有被出库消耗，而不是「这个编码有没有出过库」
       const alloc = await computeOutboundAlloc(db);
       const priceMap = await loadPriceMap(db);
+      const today = await todayOf(db);
 
       const pad = n => String(n).padStart(2, '0');
 
@@ -653,7 +672,7 @@ module.exports = function(db) {
         (orders[key] || (orders[key] = [])).push(r);
       });
 
-      let invest = 0, revenue = 0, pendingInvest = 0, pendingCount = 0, outCount = 0;
+      let invest = 0, revenue = 0, pendingInvest = 0, pendingCount = 0, outCount = 0, awaitCount = 0, awaitRevenue = 0;
       const weekMap = {};
       const devMap = {};
       const orderList = [];
@@ -664,13 +683,15 @@ module.exports = function(db) {
         // 下单设备/下级：单内一般一致，取本单首个填了值的商品
         const devItem = items.find(x => String(x.device || '').trim() !== '');
         const device = devItem ? String(devItem.device).trim() : '';
-        let sale = 0, hasOut = false, lastDay = '';
+        let sale = 0, hasOut = false, lastDay = '', awaitFlag = false;
 
         items.forEach(it => {
           const a = alloc[it.id];
           if (!a || !(a.out_qty > 0)) return;   // 本单这条没被出库消耗 → 不算
           hasOut = true;
           if (a.out_date > lastDay) lastDay = a.out_date;
+          // 出库日次日还没到（今天才出库）→ 这一单的收益只是暂计，明天录价后会自动重算
+          if (a.out_date && nextDayOf(a.out_date) > today) awaitFlag = true;
           const mp = pickMarketPrice(priceMap, it.product_code, a.out_date);
           if (mp) sale += mp.price * (Number(it.quantity) || 0);
         });
@@ -682,7 +703,8 @@ module.exports = function(db) {
         invest += cost;
         revenue += sale;
         outCount++;
-        orderList.push({ order_no: orderNo, cost, sale, profit, out_date: lastDay || '', device });
+        if (awaitFlag) { awaitCount++; awaitRevenue += sale; }
+        orderList.push({ order_no: orderNo, cost, sale, profit, out_date: lastDay || '', device, await_price: awaitFlag });
 
         // 按下单设备/下级汇总（只统计已出库单，与「总投入」口径一致）
         const devKey = device || '（未填）';
@@ -733,7 +755,10 @@ module.exports = function(db) {
           rate: invest > 0 ? Number((profit / invest * 100).toFixed(1)) : 0,
           order_count: outCount,
           pending_count: pendingCount,
-          pending_invest: Number(pendingInvest.toFixed(2))
+          pending_invest: Number(pendingInvest.toFixed(2)),
+          // 其中「今天出库、出库次日行情还没到」的单：收益只是暂计，明天录价后自动重算
+          await_count: awaitCount,
+          await_revenue: Number(awaitRevenue.toFixed(2))
         },
         weekly,
         by_device: byDevice,

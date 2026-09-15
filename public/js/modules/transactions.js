@@ -711,7 +711,10 @@ const TransactionsModule = {
         boxEl.style.borderColor = 'rgba(217,48,37,0.3)';
         boxEl.style.background = 'rgba(217,48,37,0.06)';
       }
-      detEl.innerHTML = `销售 ¥${(parseFloat(res.sale_price) || 0).toFixed(2)}<br>成本 ¥${cost.toFixed(2)}`;
+      const awaitHint = res.await_price
+        ? `<br><span style="color:#e65100;">今日出库，待 ${res.await_date} 行情，录价后自动重算</span>`
+        : '';
+      detEl.innerHTML = `销售 ¥${(parseFloat(res.sale_price) || 0).toFixed(2)}<br>成本 ¥${cost.toFixed(2)}${awaitHint}`;
     }).catch(() => {
       const valEl = document.getElementById('order-profit-value');
       if (valEl) valEl.textContent = '-';
@@ -747,7 +750,9 @@ const TransactionsModule = {
             ? `¥${(r.next_day_price || 0).toFixed(2)} × ${r.in_qty}（本单内数量） = <strong>¥${r.sale.toFixed(2)}</strong>`
             : '<span style="color:var(--text-light);">未出库，无销售</span>';
           const statusBadge = r.out_qty > 0
-            ? (r.next_day_price > 0 ? '<span class="badge badge-stock-normal">已算</span>' : '<span class="badge badge-stock-low">待行情</span>')
+            ? (r.await_price
+                ? '<span class="badge badge-stock-low" title="出库次日行情还没到，明天录价后自动重算">待次日行情</span>'
+                : (r.next_day_price > 0 ? '<span class="badge badge-stock-normal">已算</span>' : '<span class="badge badge-stock-low">待行情</span>'))
             : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>';
           return `
             <tr style="border-bottom:1px solid var(--border);">
@@ -763,6 +768,7 @@ const TransactionsModule = {
                 ${r.next_day_price > 0
                   ? `<div><strong>¥${r.next_day_price.toFixed(2)}</strong></div>${r.price_date && r.price_date !== r.next_day ? `<div style="font-size:10px;color:var(--text-light);">取自 ${r.price_date}</div>` : ''}`
                   : '<span style="color:var(--text-light);">—</span>'}
+                ${r.await_price ? `<div style="font-size:10px;color:#e65100;margin-top:3px;">${r.next_day} 录价后自动重算</div>` : ''}
                 ${r.out_qty > 0 ? `<button class="btn btn-sm ${r.next_day_price > 0 ? 'btn-secondary' : 'btn-primary'}" style="margin-top:5px;white-space:nowrap;" onclick="TransactionsModule._showBackfillPrice(${i})">${r.next_day_price > 0 ? '改行情' : '补录行情'}</button>` : ''}
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
@@ -785,6 +791,7 @@ const TransactionsModule = {
             <div>成本（整单金额）：<strong>¥${cost.toFixed(2)}</strong></div>
             <div>销售（出库次日行情 × 本单数量）：<strong>${summaryText}</strong></div>
             <div>单利润：<strong style="color:${profitColor};font-size:16px;">${profit >= 0 ? '+' : ''}¥${profit.toFixed(2)}</strong></div>
+            ${res.await_price ? `<div style="margin-top:8px;padding:8px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;color:#8a6d00;line-height:1.6;">本单有 <strong>${res.await_count}</strong> 项是<b>今天出库</b>，出库次日（<strong>${res.await_date}</strong>）的行情还没到，上面的销售和利润是先用最近一次的价（${res.detail.filter(r => r.await_price && r.price_date).map(r => r.price_date).join('、')}）<strong>暂计</strong>。明天录入 ${res.await_date} 的价后会自动重算，不用手动改。</div>` : ''}
           </div>
           <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">各商品计算明细：</div>
           <div style="overflow-x:auto;">
@@ -1278,6 +1285,9 @@ const TransactionsModule = {
     const pendingNote = Number(t.pending_count) > 0
       ? `<div style="font-size:11px;color:var(--text-light);margin-top:10px;">另有 ${t.pending_count} 单尚未出库（本金 ${this._fmtMoney(t.pending_invest)}），按约定不计入上面的统计</div>`
       : '';
+    const awaitNote = Number(t.await_count) > 0
+      ? `<div style="font-size:11px;color:#8a6d00;margin-top:6px;">其中 ${t.await_count} 单是今天出库（收益 ${this._fmtMoney(t.await_revenue)}），出库次日的行情还没到，暂按最近一次价计；明天录入次日价后自动重算</div>`
+      : '';
 
     return `
       <div class="card" style="margin-bottom:12px;">
@@ -1298,6 +1308,7 @@ const TransactionsModule = {
               </div>`).join('')}
           </div>
           ${pendingNote}
+          ${awaitNote}
           <div style="margin-top:18px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;">每周盈亏走势</div>
             ${this._renderPnlChart(dash.weekly || [])}
@@ -1318,6 +1329,7 @@ const TransactionsModule = {
   _renderInvestDetail() {
     const orders = this._dashOrders || [];
     const t = this._dashTotals || {};
+    const awaitOrders = orders.filter(o => o.await_price);
 
     // 按出库日期倒序（最新的在上），同日按单号
     const sorted = [...orders].sort((a, b) => {
@@ -1336,7 +1348,7 @@ const TransactionsModule = {
         <td style="font-size:12px;color:var(--text-secondary);white-space:nowrap;">${dev}</td>
         <td style="text-align:right;">${this._fmtMoney(o.cost)}</td>
         <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(o.sale)}</td>
-        <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
+        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._fmtMoney(pnl)}${o.await_price ? '<span class="badge badge-stock-low" style="margin-left:5px;font-size:10px;" title="出库次日行情还没到，现在的收益是暂计，明天录价后自动重算">待次日</span>' : ''}</td>
         <td style="text-align:center;font-size:12px;color:var(--text-secondary);white-space:nowrap;">${o.out_date || '-'}</td>
       </tr>`;
     }).join('');
@@ -1378,6 +1390,7 @@ const TransactionsModule = {
           </table>
         </div>
         <div style="font-size:11px;color:var(--text-light);margin-top:10px;">尚未出库的单不计入「总投入」；等它们出库后会自动进这张表。</div>
+        ${awaitOrders.length > 0 ? `<div style="font-size:11px;color:#8a6d00;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:8px;margin-top:8px;line-height:1.6;">带「待次日」的 ${awaitOrders.length} 单是<b>今天出库</b>，出库次日的行情还没到，现在的收益是按最近一次价<b>暂计</b>。明天录入次日行情价后会<b>自动重算</b>，不用做任何操作。</div>` : ''}
         <div style="margin-top:14px;text-align:right;">
           <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
         </div>
@@ -1481,7 +1494,7 @@ const TransactionsModule = {
         <td style="font-size:12px;">${o.order_no}</td>
         <td style="text-align:right;">${this._fmtMoney(o.cost)}</td>
         <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(o.sale)}</td>
-        <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
+        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._fmtMoney(pnl)}${o.await_price ? '<span class="badge badge-stock-low" style="margin-left:5px;font-size:10px;" title="出库次日行情还没到，现在的收益是暂计，明天录价后自动重算">待次日</span>' : ''}</td>
         <td style="text-align:center;font-size:12px;color:var(--text-secondary);white-space:nowrap;">${o.out_date || '-'}</td>
       </tr>`;
     }).join('');
