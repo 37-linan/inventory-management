@@ -1263,6 +1263,14 @@ const TransactionsModule = {
     return (n < 0 ? '-¥' : '¥') + Math.abs(n).toFixed(2);
   },
 
+  // 盈亏率文案：盈亏 ÷ 投入；投入为 0 → 「—」，四舍五入后为 0 显示 0.0%，正数带 +
+  _rateTxt(pnl, invest) {
+    const inv = Number(invest) || 0;
+    if (inv <= 0) return '—';
+    const r = (Number(pnl) || 0) / inv * 100;
+    return Math.abs(r) < 0.05 ? '0.0%' : (r > 0 ? '+' : '') + r.toFixed(1) + '%';
+  },
+
   _renderLedgerDashboard(dash) {
     const t = dash.totals || {};
     // 缓存明细，供「总投入」弹窗使用（接口已返回 orders，不必再请求一次）
@@ -1354,6 +1362,7 @@ const TransactionsModule = {
         <td style="text-align:right;">${this._fmtMoney(o.cost)}</td>
         <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(o.sale)}</td>
         <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._fmtMoney(pnl)}${o.await_price ? '<span class="badge badge-stock-low" style="margin-left:5px;font-size:10px;" title="出库次日行情还没到，现在的收益是暂计，明天录价后自动重算">待次日</span>' : ''}</td>
+        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._rateTxt(pnl, o.cost)}</td>
         <td style="text-align:center;font-size:12px;color:var(--text-secondary);white-space:nowrap;">${o.out_date || '-'}</td>
       </tr>`;
     }).join('');
@@ -1379,6 +1388,7 @@ const TransactionsModule = {
                 <th style="text-align:right;">采购本金</th>
                 <th style="text-align:right;">收益</th>
                 <th style="text-align:right;">盈亏</th>
+                <th style="text-align:right;">盈亏率</th>
                 <th style="text-align:center;">出库日期</th>
               </tr>
             </thead>
@@ -1389,6 +1399,7 @@ const TransactionsModule = {
                 <td style="text-align:right;">${this._fmtMoney(t.invest)}</td>
                 <td style="text-align:right;">${this._fmtMoney(t.revenue)}</td>
                 <td style="text-align:right;color:${Number(t.profit) >= 0 ? '#c62828' : '#2e7d32'};">${this._fmtMoney(t.profit)}</td>
+                <td style="text-align:right;color:${Number(t.profit) >= 0 ? '#c62828' : '#2e7d32'};white-space:nowrap;">${this._rateTxt(t.profit, t.invest)}</td>
                 <td></td>
               </tr>
             </tfoot>
@@ -1422,11 +1433,6 @@ const TransactionsModule = {
     }
     this._devList = devices;   // 供点击行时按下标取用（避免把设备名拼进 onclick）
 
-    // 盈亏率 = 盈亏 ÷ 投入（投入为 0 时显示 —）
-    const rateOf = (pnl, inv) => (Number(inv) || 0) > 0 ? (pnl / (Number(inv) || 0) * 100) : null;
-    const rateTxt = r => r === null ? '—'
-      : (Math.abs(r) < 0.05 ? '0.0%' : (r > 0 ? '+' : '') + r.toFixed(1) + '%');
-
     const rows = devices.map((d, i) => {
       const pnl = Number(d.profit) || 0;
       const color = pnl >= 0 ? '#c62828' : '#2e7d32';
@@ -1435,7 +1441,7 @@ const TransactionsModule = {
         <td style="text-align:right;font-weight:600;">${this._fmtMoney(d.invest)}</td>
         <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(d.revenue)}</td>
         <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
-        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${rateTxt(rateOf(pnl, d.invest))}</td>
+        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._rateTxt(pnl, d.invest)}</td>
         <td style="text-align:center;color:var(--text-secondary);">${d.orders}</td>
         <td style="text-align:center;color:var(--primary);font-size:12px;white-space:nowrap;">明细 ›</td>
       </tr>`;
@@ -1472,7 +1478,7 @@ const TransactionsModule = {
                 <td style="text-align:right;">${this._fmtMoney(sumInvest)}</td>
                 <td style="text-align:right;">${this._fmtMoney(sumRevenue)}</td>
                 <td style="text-align:right;color:${sumProfit >= 0 ? '#c62828' : '#2e7d32'};">${this._fmtMoney(sumProfit)}</td>
-                <td style="text-align:right;color:${sumProfit >= 0 ? '#c62828' : '#2e7d32'};white-space:nowrap;">${rateTxt(rateOf(sumProfit, sumInvest))}</td>
+                <td style="text-align:right;color:${sumProfit >= 0 ? '#c62828' : '#2e7d32'};white-space:nowrap;">${this._rateTxt(sumProfit, sumInvest)}</td>
                 <td style="text-align:center;">${sumOrders}</td>
                 <td></td>
               </tr>
