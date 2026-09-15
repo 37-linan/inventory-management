@@ -1276,14 +1276,14 @@ const TransactionsModule = {
     const pnlColor = profit >= 0 ? UP : DOWN;
 
     const cards = [
-      { label: '总投入', value: this._fmtMoney(t.invest), color: 'var(--text)', sub: `已出库 ${t.order_count || 0} 单的采购本金`, click: 'TransactionsModule._showInvestDetail()', hint: '点击查看明细' },
+      { label: '总投入', value: this._fmtMoney(t.invest), color: 'var(--text)', sub: `已出库 ${t.order_count || 0} 单的采购本金` },
       { label: '总收益', value: this._fmtMoney(t.revenue), color: 'var(--text)', sub: '已出库部分按行情价计' },
       { label: '净盈亏', value: this._fmtMoney(profit), color: pnlColor, sub: '总收益 − 总投入' },
       { label: '盈亏率', value: (rate > 0 ? '+' : '') + rate.toFixed(1) + '%', color: pnlColor, sub: '净盈亏 ÷ 总投入' }
     ];
 
     const pendingNote = Number(t.pending_count) > 0
-      ? `<div style="font-size:11px;color:var(--text-light);margin-top:10px;">另有 ${t.pending_count} 单尚未出库（本金 ${this._fmtMoney(t.pending_invest)}），按约定不计入上面的统计</div>`
+      ? `<div style="font-size:11px;color:var(--text-light);">另有 ${t.pending_count} 单尚未出库（本金 ${this._fmtMoney(t.pending_invest)}），按约定不计入上面的统计</div>`
       : '';
     const awaitNote = Number(t.await_count) > 0
       ? `<div style="font-size:11px;color:#8a6d00;margin-top:6px;">其中 ${t.await_count} 单是今天出库（收益 ${this._fmtMoney(t.await_revenue)}），出库次日的行情还没到，暂按最近一次价计；明天录入次日价后自动重算</div>`
@@ -1307,8 +1307,13 @@ const TransactionsModule = {
                 <div style="font-size:11px;color:var(--text-light);margin-top:6px;">${c.sub}</div>
               </div>`).join('')}
           </div>
-          ${pendingNote}
-          ${awaitNote}
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-top:12px;">
+            <div style="flex:1;min-width:240px;">
+              ${pendingNote}
+              ${awaitNote}
+            </div>
+            <button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-top:2px;" onclick="TransactionsModule._showInvestDetail()" title="每一单的下单设备 / 采购本金 / 收益 / 盈亏 / 出库日期，点进去还能按下单设备拆分">查看每单明细 ›</button>
+          </div>
           <div style="margin-top:18px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;">每周盈亏走势</div>
             ${this._renderPnlChart(dash.weekly || [])}
