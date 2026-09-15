@@ -769,7 +769,8 @@ module.exports = function(db) {
                (SELECT unit FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_unit,
                (SELECT type FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as product_type,
                (SELECT bundle_qty FROM main_products p WHERE p.code = o.product_code ORDER BY p.id DESC LIMIT 1) as bundle_qty,
-               '出库' as type, o.created_at as record_time
+               '出库' as type, o.created_at as record_time,
+               to_char(o.created_at,'YYYY-MM-DD') as out_day
         FROM main_outbound o 
         ORDER BY o.created_at DESC
       `);
@@ -834,26 +835,27 @@ module.exports = function(db) {
         console.error('FIFO 成本计算失败:', e.message);
       }
 
-      // 逐条出库记录：售价（当天/之前最近一次录的价格）× 数量 = 销售额，成本 = FIFO 具体成本
+      // 逐条出库记录：售价 × 数量 = 销售额，成本 = FIFO 具体成本
+      // ⚠️ 取价口径必须与「单利润 / 盈亏总览」完全一致（2026-09-15 对齐）：
+      //    出库次日(D+1)优先，次日没录 → 出库日当天/之前最近一天，不往后找
+      //    这里不能写成 date <= 出库日，否则出库当天录了次日价时对不上
+      const priceMap = await loadPriceMap(db);
       for (const ob of outbound.rows) {
-        const outDate = ob.created_at ? new Date(ob.created_at).toISOString().slice(0, 10) : '';
+        const outDate = ob.out_day || '';
         if (outDate) {
-          const priceRec = await db.query(
-            `SELECT price FROM main_price_history 
-             WHERE product_code = ? AND date <= ?::date
-             ORDER BY date DESC LIMIT 1`,
-            [ob.product_code, outDate]
-          );
-          const salePrice = priceRec.rows[0] ? Number(priceRec.rows[0].price) : 0;
+          const mp = pickMarketPrice(priceMap, ob.product_code, outDate);
+          const salePrice = mp ? mp.price : 0;
           const totalCost = costByOutId[ob.id] || 0;
           const totalSale = salePrice * Number(ob.quantity || 0);
           ob.sale_price = Number(totalSale.toFixed(2));   // 整单销售额
           ob.cost_price = Number(totalCost.toFixed(2));   // 整单成本（FIFO 具体成本）
           ob.profit = Number((totalSale - totalCost).toFixed(2));
+          ob.price_date = mp ? mp.date : '';              // 行情价实际取自哪一天
         } else {
           ob.sale_price = 0;
           ob.cost_price = 0;
           ob.profit = 0;
+          ob.price_date = '';
         }
       }
 

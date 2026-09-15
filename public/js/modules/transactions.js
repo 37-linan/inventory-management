@@ -1739,7 +1739,7 @@ const TransactionsModule = {
                       <td style="text-align:center;">${showBq && bq > 1 ? '<span style="color:#fbbc04;font-weight:500;">×' + bq + '</span>' : '<span style="color:#bbb;">-</span>'}</td>
                       <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
                       <td>${r.location || '-'}</td>
-                      <td>${r.sale_price ? '¥' + r.sale_price : '-'}</td>
+                      <td title="${r.price_date ? '行情取自 ' + r.price_date : ''}">${r.sale_price ? '¥' + r.sale_price : '-'}</td>
                       <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule._deleteLedgerRecord('${sys}','outbound',${r.id})">删除</button></td>
                     </tr>`;
                     }).join('')}
