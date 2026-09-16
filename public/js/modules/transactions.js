@@ -1017,7 +1017,9 @@ const TransactionsModule = {
               <label>物品编码 <span style="color:var(--danger)">*</span></label>
               <div class="input-with-btn">
                 <input type="text" id="outbound-code" placeholder="手动输入或扫描条码" required list="product-codes-${system}" />
-                <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('outbound-code')">扫码</button>
+                ${this._isTouchDevice()
+                  ? `<button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('outbound-code')">扫码</button>`
+                  : `<button type="button" class="btn btn-sm btn-primary" onclick="TransactionsModule.showOutboundPicker('${system}')">选择商品</button>`}
               </div>
             </div>
             <div class="form-group">
@@ -1143,6 +1145,187 @@ const TransactionsModule = {
     } catch (e) {
       showToast('出库登记失败: ' + e.message);
     }
+  },
+
+  // ===== 电脑端：从库存里挑一个商品直接出库（手机端保持扫码，不受影响）=====
+  // 触摸设备（手机/平板）→ true；电脑 → false
+  _isTouchDevice() {
+    const ua = navigator.userAgent || '';
+    if (/Android|iPhone|iPad|iPod|Windows Phone|Mobi/i.test(ua)) return true;
+    try { return window.matchMedia('(pointer: coarse)').matches; } catch (e) { return false; }
+  },
+
+  async showOutboundPicker(system) {
+    let inv = [];
+    try {
+      const data = await API.get(`/api/${system}/inventory`);
+      inv = (data && data.inventory) ? data.inventory : (Array.isArray(data) ? data : []);
+    } catch (e) {
+      showToast('加载库存失败: ' + e.message);
+      return;
+    }
+    // 同一编码可能有多条（不同套餐/类型），合并成一条：库存相加，名称规格取最先出现的那条
+    const map = new Map();
+    inv.forEach(p => {
+      const cur = map.get(p.code);
+      if (cur) cur.stock += Number(p.stock) || 0;
+      else map.set(p.code, Object.assign({}, p, { stock: Number(p.stock) || 0 }));
+    });
+    this._pickSystem = system;
+    this._pickList = Array.from(map.values())
+      .sort((a, b) => (b.stock || 0) - (a.stock || 0) || String(a.code).localeCompare(String(b.code)));
+    this._pickSelected = null;
+    this._pickSelectedRow = null;
+    this._pickQty = '';
+    this._pickKeyword = '';
+    this._pickOnlyStock = true;
+
+    showModal('选择商品出库');
+    this._renderOutboundPicker();
+  },
+
+  _renderOutboundPicker() {
+    const body = document.getElementById('modal-body');
+    if (!body) return;
+    body.innerHTML = `
+      <div style="padding:2px 0 12px;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <input type="text" id="pick-search" placeholder="搜索编码 / 名称 / 规格" value="${this._pickKeyword || ''}"
+                 oninput="TransactionsModule._pickKeyword=this.value; TransactionsModule._renderPickList()"
+                 style="flex:1 1 200px;min-width:150px;" />
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);white-space:nowrap;cursor:pointer;">
+            <input type="checkbox" ${this._pickOnlyStock ? 'checked' : ''}
+                   onchange="TransactionsModule._pickOnlyStock=this.checked; TransactionsModule._renderPickList()" />
+            只看有库存
+          </label>
+        </div>
+        <div class="table-wrapper" style="max-height:40vh;overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th style="width:30px;"></th>
+                <th>物品编码</th>
+                <th>物品名称</th>
+                <th>规格</th>
+                <th style="text-align:right;">库存</th>
+              </tr>
+            </thead>
+            <tbody id="pick-list-body"></tbody>
+          </table>
+        </div>
+        <div id="pick-bottom" style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px;"></div>
+      </div>
+    `;
+    this._renderPickList();
+  },
+
+  _renderPickList() {
+    const tbody = document.getElementById('pick-list-body');
+    if (!tbody) return;
+
+    const kw = (this._pickKeyword || '').trim().toLowerCase();
+    let list = this._pickList || [];
+    if (this._pickOnlyStock) list = list.filter(p => Number(p.stock) > 0);
+    if (kw) {
+      list = list.filter(p => (`${p.code || ''} ${p.name || ''} ${p.spec || ''}`).toLowerCase().includes(kw));
+    }
+    this._pickShown = list;
+
+    if (!list.length) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-light);padding:22px;">${(this._pickList || []).length ? '没有匹配的商品' : '库里还没有商品'}</td></tr>`;
+    } else {
+      tbody.innerHTML = list.map((p, i) => {
+        const sel = this._pickSelected === p.code;
+        const stock = Number(p.stock) || 0;
+        return `<tr style="cursor:pointer;${sel ? 'background:#e8f0fe;' : ''}" onclick="TransactionsModule._pickSelect(${i})" title="点一下选中这个商品">
+          <td style="text-align:center;color:var(--primary);font-weight:600;">${sel ? '✓' : ''}</td>
+          <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${p.code}</code></td>
+          <td style="font-size:12px;">${p.name || '-'}</td>
+          <td style="font-size:12px;color:var(--text-secondary);">${p.spec || '-'}</td>
+          <td style="text-align:right;font-weight:600;color:${stock > 0 ? 'var(--primary)' : 'var(--text-light)'};">${this._fmtQty(stock)}</td>
+        </tr>`;
+      }).join('');
+    }
+    this._renderPickBottom();
+  },
+
+  _pickSelect(i) {
+    const p = (this._pickShown || [])[i];
+    if (!p) return;
+    this._pickSelected = p.code;
+    this._pickSelectedRow = p;
+    // 只改高亮，不重建整张表（避免闪动）
+    Array.from(document.querySelectorAll('#pick-list-body tr')).forEach((tr, idx) => {
+      const row = (this._pickShown || [])[idx];
+      const sel = row && row.code === p.code;
+      tr.style.background = sel ? '#e8f0fe' : '';
+      const c = tr.querySelector('td');
+      if (c) c.textContent = sel ? '✓' : '';
+    });
+    this._renderPickBottom();
+    const q = document.getElementById('pick-qty');
+    if (q) q.focus();
+  },
+
+  _renderPickBottom() {
+    const el = document.getElementById('pick-bottom');
+    if (!el) return;
+    const p = this._pickSelectedRow;
+    const stock = p ? (Number(p.stock) || 0) : 0;
+    el.innerHTML = `
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+        ${p
+          ? `已选：<b style="color:var(--text);">${p.name || p.code}</b>　<code style="background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:11px;">${p.code}</code>　库存 <b>${this._fmtQty(stock)}</b>`
+          : '请在上面点一下，选中要出库的商品'}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="number" id="pick-qty" step="0.01" min="0.01" placeholder="出库数量" value="${this._pickQty || ''}"
+               oninput="TransactionsModule._pickQty=this.value; TransactionsModule._renderPickWarn();"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();TransactionsModule._confirmOutboundPick();}"
+               style="width:130px;" />
+        <button class="btn btn-warning" onclick="TransactionsModule._confirmOutboundPick()">确认出库</button>
+        <span id="pick-warn"></span>
+      </div>
+      <div style="font-size:11px;color:var(--text-light);margin-top:8px;">地点 / 订单号 / 发货图片沿用上方表单里已填的内容；出库后可以再点「选择商品」继续下一个。</div>
+    `;
+    this._renderPickWarn();
+  },
+
+  _renderPickWarn() {
+    const el = document.getElementById('pick-warn');
+    if (!el) return;
+    const p = this._pickSelectedRow;
+    if (!p) { el.textContent = ''; return; }
+    const stock = Number(p.stock) || 0;
+    const qty = parseFloat(this._pickQty) || 0;
+    el.innerHTML = qty > stock
+      ? `<span style="font-size:11px;color:#e65100;">本次 ${this._fmtQty(qty)} 超出库存（仍可提交，请自行确认）</span>`
+      : '';
+  },
+
+  async _confirmOutboundPick() {
+    const system = this._pickSystem;
+    const p = this._pickSelectedRow;
+    if (!p) { showToast('请先选择一个商品'); return; }
+    const qty = parseFloat(this._pickQty);
+    if (!qty || qty <= 0) {
+      showToast('请填写出库数量');
+      const q = document.getElementById('pick-qty');
+      if (q) q.focus();
+      return;
+    }
+    const codeEl = document.getElementById('outbound-code');
+    const qtyEl = document.getElementById('outbound-qty');
+    if (!codeEl || !qtyEl) { showToast('出库表单没有打开，请刷新页面'); return; }
+
+    // 回填表单 → 复用原有提交逻辑（地点 / 订单号 / 图片一并带上）
+    codeEl.value = p.code;
+    qtyEl.value = qty;
+    this._pickSelected = null;
+    this._pickSelectedRow = null;
+    this._pickQty = '';
+    closeModal();
+    await this.submitOutbound(system);
   },
 
   // ===== 补录出库订单号 =====
