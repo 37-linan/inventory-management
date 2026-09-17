@@ -275,6 +275,7 @@ const TransactionsModule = {
       { key: 'spec', label: '规格' },
       { key: 'quantity', label: '登记数量' },
       { key: 'channel', label: '渠道' },
+      { key: 'device', label: '下单设备/下级' },
       { key: 'purchase_price', label: '价格' },
       { key: 'created_at', label: '登记日期时间' },
       { key: 'marked', label: '标记' },
@@ -297,6 +298,17 @@ const TransactionsModule = {
     }
   },
 
+  // 入库记录里出现过的「下单设备/下级」（去重 + 稳定排序），供筛选下拉用
+  // ⚠️ 取全量记录（_inboundAllRecords）而不是筛选结果，否则选中一个设备后其余选项会消失
+  _inboundDeviceOptions() {
+    const set = new Set();
+    (this._inboundAllRecords || []).forEach(r => {
+      const d = String(r.device || '').trim();
+      if (d) set.add(d);
+    });
+    return [...set].sort((a, b) => String(a).localeCompare(String(b), 'zh-Hans-CN'));
+  },
+
   // 渲染筛选条件（字段胶囊）+ 筛选栏（输入框/下拉）
   async _renderInboundFilterControls() {
     const fieldsEl = document.getElementById('inbound-filter-fields');
@@ -311,18 +323,23 @@ const TransactionsModule = {
       `<span class="filter-chip${f.field === d.key ? ' active' : ''}" onclick="TransactionsModule._setInboundFilterField('${d.key}')">${d.label}</span>`
     ).join('');
 
-    // 筛选栏：渠道 → 下拉选渠道；标记 → 下拉选已标记/未标记；其余 → 文本输入
-    if (f.field === 'channel' || f.field === 'marked') {
-      let opts = [];
-      if (f.field === 'channel') {
-        opts = await this._getChannelOptions(system);
-        if (barEl.__lastField !== 'channel') { f.keyword = ''; }
-      } else {
-        opts = ['已标记', '未标记'];
-        if (barEl.__lastField !== 'marked') { f.keyword = ''; }
-      }
+    // 筛选栏：渠道 / 标记 / 下单设备 → 下拉选择（取值有限，比手打准）；其余 → 文本输入
+    let opts = null, allLabel = '';
+    if (f.field === 'channel') {
+      opts = await this._getChannelOptions(system);
+      allLabel = '全部渠道';
+    } else if (f.field === 'marked') {
+      opts = ['已标记', '未标记'];
+      allLabel = '全部标记状态';
+    } else if (f.field === 'device') {
+      opts = this._inboundDeviceOptions();
+      allLabel = '全部设备/下级';
+      if (!opts.length) opts = null;   // 一条都没填过设备 → 退化为文本输入，不给空下拉
+    }
+    if (opts) {
+      if (barEl.__lastField !== f.field) { f.keyword = ''; }
       barEl.innerHTML = `<select class="filter-input" id="inbound-filter-select" onchange="TransactionsModule._onInboundFilterInput(this.value)">
-        <option value="">全部${f.field === 'channel' ? '渠道' : '标记状态'}</option>
+        <option value="">${allLabel}</option>
         ${opts.map(o => `<option value="${o}"${String(f.keyword) === String(o) ? ' selected' : ''}>${o}</option>`).join('')}
       </select>`;
       barEl.__lastField = f.field;
@@ -330,7 +347,7 @@ const TransactionsModule = {
       if (barEl.__lastField && barEl.__lastField !== f.field) { f.keyword = ''; }
       barEl.__lastField = f.field;
       const ph = f.field === 'all'
-        ? '输入关键词，全字段筛选…（编码 / 名称 / 规格 / 渠道 / 数量 / 价格 / 日期）'
+        ? '输入关键词，全字段筛选…（编码 / 名称 / 规格 / 渠道 / 设备 / 数量 / 价格 / 日期）'
         : `在「${(this._inboundFilterDefs().find(d => d.key === f.field) || {}).label || ''}」中筛选…`;
       barEl.innerHTML = `<input type="text" class="filter-input" id="inbound-filter-input" placeholder="${ph}"
         value="${String(f.keyword || '').replace(/"/g, '&quot;')}"
@@ -381,6 +398,7 @@ const TransactionsModule = {
       spec: p ? String(p.spec || '') : '',
       quantity: String(r.quantity == null ? '' : r.quantity),
       channel: String(r.channel || ''),
+      device: String(r.device || ''),
       purchase_price: String(r.purchase_price == null ? '' : r.purchase_price),
       created_at: `${this._fmtDateTime(r.created_at)} ${String(r.created_at || '')}`,
       marked: r.row_color ? '已标记' : '未标记'
@@ -389,7 +407,10 @@ const TransactionsModule = {
       return Object.keys(vals).some(k => vals[k].toLowerCase().includes(kw));
     }
     const v = vals[f.field];
-    return v === undefined ? false : String(v).toLowerCase().includes(kw);
+    if (v === undefined) return false;
+    const sv = String(v).trim().toLowerCase();
+    // 设备是下拉选的 → 要完全相等，否则选「1」会把「10」「11」也带出来
+    return f.field === 'device' ? sv === kw : sv.includes(kw);
   },
 
   // 只重绘表格主体（筛选变化时用，不重新请求接口）
