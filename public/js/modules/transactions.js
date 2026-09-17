@@ -17,6 +17,11 @@ const TransactionsModule = {
     { val: '#fce4ec', label: '粉色', bg: '#fce4ec', border: '#f48fb1' },
   ],
 
+  // 入库表「单号组」的折叠状态，key = 订单号（无单号的用「（无单号）」）
+  // ❗ 必须记在状态里而不是只看 DOM：设颜色/行内编辑/删除后表格会整块重绘，
+  //    DOM 上的 display:none 会全部丢失 → 之前收起来的组全部弹开（2026-09-18 修复）
+  _collapsedGroups: new Set(),
+
   // 生成行颜色标记HTML（整格填色，点击弹出选色器）
   _renderColorCell(rowId, type, currentColor) {
     const c = currentColor || '';
@@ -497,11 +502,12 @@ const TransactionsModule = {
       const groupId = `inb-grp-${gi}`;
       const cacheKey = `g${gi}`;
       this._groupStatsCache[cacheKey] = items;
+      const collapsed = this._collapsedGroups.has(orderNo);   // 重绘后仍保持收起
 
       // 组头行：跨整行，显示订单号 + 汇总信息
       html += `<tr class="group-header" style="cursor:pointer;background:${groupColor || '#eef2f7'};font-weight:600;" onclick="TransactionsModule._toggleGroupRows('${groupId}','${cacheKey}')">
         <td colspan="10" style="padding:8px 12px;border-top:2px solid ${groupColor || 'transparent'};">
-          <span style="display:inline-block;width:14px;text-align:center;" id="${groupId}-icon">▾</span>
+          <span style="display:inline-block;width:14px;text-align:center;" id="${groupId}-icon">${collapsed ? '▸' : '▾'}</span>
           <span style="color:var(--primary);">📦 ${orderNo}</span>
           <span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">${firstTime}</span>
           ${filtering
@@ -517,7 +523,12 @@ const TransactionsModule = {
       items.forEach(r => {
         const p = products.find(x => x.code === r.product_code);
         const rowColor = r.row_color || '';
-        html += `<tr class="${groupId}-rows ${rowColor ? 'row-color' : ''}" ${rowColor ? "style='--row-bg:" + rowColor + ";--row-bg-hover:" + rowColor + "'" : ''}>
+        // 行内样式：颜色变量 + 收起时隐藏（两个都要带上，别互相覆盖）
+        const rowStyle = [
+          rowColor ? `--row-bg:${rowColor};--row-bg-hover:${rowColor}` : '',
+          collapsed ? 'display:none' : ''
+        ].filter(Boolean).join(';');
+        html += `<tr class="${groupId}-rows ${rowColor ? 'row-color' : ''}" ${rowStyle ? `style="${rowStyle}"` : ''}>
           <td>${this._renderColorCell(r.id, 'inbound', r.row_color)}</td>
           <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
           <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
@@ -539,9 +550,17 @@ const TransactionsModule = {
   _toggleGroupRows(groupId, cacheKey) {
     const icon = document.getElementById(groupId + '-icon');
     const rows = document.querySelectorAll('.' + groupId + '-rows');
-    const collapsed = icon.textContent.trim() === '▸';
+    const collapsed = icon.textContent.trim() === '▸';   // 点之前是不是收起的
     rows.forEach(r => r.style.display = collapsed ? '' : 'none');
     icon.textContent = collapsed ? '▾' : '▸';
+
+    // 把状态记下来（key 与 _renderInboundRows 分组用的 key 保持一致）
+    const items = (this._groupStatsCache || {})[cacheKey];
+    if (items && items.length) {
+      const key = items[0].order_no || '（无单号）';
+      if (collapsed) this._collapsedGroups.delete(key);   // 展开
+      else this._collapsedGroups.add(key);                // 收起
+    }
   },
 
   // ===== 行内编辑：点一下「数量 / 渠道 / 价格」就地改，不用删了重填 =====
