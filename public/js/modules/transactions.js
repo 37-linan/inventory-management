@@ -164,7 +164,8 @@ const TransactionsModule = {
             </div>
             <div class="form-group">
               <label>下单设备/下级 <span style="color:var(--text-light);font-size:11px;">(一单多品时后续自动沿用)</span></label>
-              <input type="text" id="inbound-device" placeholder="设备名称或下级单位" />
+              <input type="text" id="inbound-device" list="device-options-${system}" placeholder="设备名称或下级单位" />
+              <datalist id="device-options-${system}"></datalist>
             </div>
             <div class="form-group">
               <label>渠道</label>
@@ -259,6 +260,7 @@ const TransactionsModule = {
       this._inboundRowCache = {};
       this._inboundAllRecords.forEach(r => { this._inboundRowCache[r.id] = r; });
       await this._renderInboundFilterControls();
+      this._renderDeviceOptions(system);
       this._renderInboundRows();
     } catch (e) {
       tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:var(--danger);padding:20px;">加载失败: ${e.message}</td></tr>`;
@@ -307,6 +309,16 @@ const TransactionsModule = {
       if (d) set.add(d);
     });
     return [...set].sort((a, b) => String(a).localeCompare(String(b), 'zh-Hans-CN'));
+  },
+
+  // 把用过的设备名灌进 <datalist>，输入时自动提示，避免「林h东 / 林浩东」这类手打变体
+  // （只做提示，不限制手输新设备）
+  _renderDeviceOptions(system) {
+    const el = document.getElementById(`device-options-${system}`);
+    if (!el) return;
+    el.innerHTML = this._inboundDeviceOptions()
+      .map(d => `<option value="${String(d).replace(/"/g, '&quot;')}"></option>`)
+      .join('');
   },
 
   // 渲染筛选条件（字段胶囊）+ 筛选栏（输入框/下拉）
