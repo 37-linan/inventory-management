@@ -163,7 +163,7 @@ const TransactionsModule = {
               <input type="number" id="inbound-qty" placeholder="入库数量" required step="0.01" min="0.01" />
             </div>
             <div class="form-group">
-              <label>下单设备/下级</label>
+              <label>下单设备/下级 <span style="color:var(--text-light);font-size:11px;">(一单多品时后续自动沿用)</span></label>
               <input type="text" id="inbound-device" placeholder="设备名称或下级单位" />
             </div>
             <div class="form-group">
@@ -949,13 +949,16 @@ const TransactionsModule = {
     `;
   },
 
-  // 继续添加该单其他商品：清空商品字段，保留单号
+  // 继续添加该单其他商品：清空商品字段，保留单号 + 下单设备/下级
   continueInbound(system) {
     const orderInput = document.getElementById('inbound-order');
+    const deviceInput = document.getElementById('inbound-device');
     const orderNo = orderInput ? orderInput.value : '';
+    const device = deviceInput ? deviceInput.value.trim() : '';
     closeModal();
     document.getElementById('inbound-form').reset();
-    if (orderInput) orderInput.value = orderNo; // 沿用单号，不用再录
+    if (orderInput) orderInput.value = orderNo;            // 沿用单号，不用再录
+    if (deviceInput && device) deviceInput.value = device;  // 沿用下单设备/下级，不用再录
     this.inboundImages = [];
     const preview = document.getElementById('inbound-image-preview');
     if (preview) preview.innerHTML = '';
