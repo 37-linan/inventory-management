@@ -866,6 +866,46 @@ table tr.row-color:hover td { background-color: var(--row-bg-hover); }
   .card { box-shadow: none; break-inside: avoid; }
 }
 
+/* ========== 成本台账（运营成本）· 文档式一行一行 ========== */
+.opex-doc td { border-bottom: 1px solid #f0f0f0; }
+.opex-doc thead th { border-bottom: 1px solid var(--border); }
+
+/* 月份小标题行：横跨整行，浅底 + 加粗 */
+.opex-doc tr.opex-month td {
+  background: var(--bg);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.opex-doc tr.opex-month .opex-month-sum {
+  float: right;
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 明细行：像账本，行距松一点 */
+.opex-doc tr.opex-row td { padding: 9px 12px; }
+.opex-doc tr.opex-row:hover td { background: #fafbfc; }
+.opex-doc .opex-date { color: var(--text-secondary); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.opex-doc .opex-note { font-size: 11px; color: var(--text-light); margin-top: 2px; }
+.opex-doc .opex-cat { background: #fff3e0; color: #e65100; }
+.opex-doc .opex-amount { text-align: right; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.opex-doc .opex-act a { color: var(--primary); font-size: 12px; cursor: pointer; margin-left: 8px; }
+.opex-doc .opex-act a.opex-del { color: var(--danger); }
+.opex-doc .opex-empty { text-align: center; color: var(--text-light); padding: 28px; }
+
+.opex-doc tfoot .opex-total td {
+  font-weight: 600;
+  border-top: 2px solid var(--border);
+  background: var(--bg);
+  padding: 10px 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ========== 拖拽排序 ========== */
 tr[draggable="true"] { transition: background 0.15s; }
 tr[draggable="true"]:hover { background: #f0f7ff !important; }

@@ -90,6 +90,29 @@ function pickMarketPrice(priceMap, code, outDay) {
   return before ? { price: before.p, date: before.d, fromNextDay: false } : null;
 }
 
+// ============================================================================
+// 成本台账（运营成本）建表 —— 幂等，首次访问 /opex 时自动建，一次
+// 只记「运营支出」（投流、运费、包装、平台费…），**与商品采购成本无关**
+// ============================================================================
+let opexReady = null;
+function ensureOpexTable(db) {
+  if (!opexReady) {
+    opexReady = db.query(`
+      CREATE TABLE IF NOT EXISTS main_opex (
+        id SERIAL PRIMARY KEY,
+        cost_date DATE NOT NULL,
+        item TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT '',
+        amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        note TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMP NOT NULL DEFAULT now()
+      )`)
+      .then(() => db.query('CREATE INDEX IF NOT EXISTS idx_main_opex_date ON main_opex (cost_date DESC)'))
+      .catch(e => { opexReady = null; throw e; });   // 失败允许下次重试
+  }
+  return opexReady;
+}
+
 module.exports = function(db) {
   const router = express.Router();
 
@@ -545,6 +568,91 @@ module.exports = function(db) {
       } else {
         await db.query('INSERT INTO main_config (config_key, config_value) VALUES (?, ?)', [req.params.key, JSON.stringify(value)]);
       }
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ========== 成本台账（运营成本 · 手工记账）==========
+  // 说明：这里是「记账本」，只记运营支出，和商品采购成本（入库单金额）是两回事。
+  //       金额允许为负（用于退款/冲抵），前端按月分组、逐行显示。
+
+  router.get('/opex', async (req, res) => {
+    try {
+      await ensureOpexTable(db);
+      const r = await db.query(
+        `SELECT id, to_char(cost_date,'YYYY-MM-DD') AS cost_date, item, category, amount, note,
+                to_char(created_at,'YYYY-MM-DD HH24:MI') AS created_at
+         FROM main_opex
+         ORDER BY cost_date DESC, id DESC`
+      );
+      res.json(r.rows);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.post('/opex', async (req, res) => {
+    try {
+      await ensureOpexTable(db);
+      const { cost_date, item, amount, category, note } = req.body;
+      const d = String(cost_date || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: '日期格式应为 YYYY-MM-DD' });
+      const it = String(item || '').trim();
+      if (!it) return res.status(400).json({ error: '请填写项目/摘要' });
+      const amt = parseFloat(amount);
+      if (isNaN(amt)) return res.status(400).json({ error: '请填写金额' });
+
+      const r = await db.query(
+        `INSERT INTO main_opex (cost_date, item, category, amount, note) VALUES (?, ?, ?, ?, ?) RETURNING id`,
+        [d, it, String(category || '').trim(), amt, String(note || '').trim()]
+      );
+      res.json({ success: true, id: r.rows[0].id });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.patch('/opex/:id', async (req, res) => {
+    try {
+      await ensureOpexTable(db);
+      const { cost_date, item, amount, category, note } = req.body;
+      const sets = [];
+      const params = [];
+
+      if (cost_date !== undefined) {
+        const d = String(cost_date).trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return res.status(400).json({ error: '日期格式应为 YYYY-MM-DD' });
+        sets.push('cost_date = ?'); params.push(d);
+      }
+      if (item !== undefined) {
+        const it = String(item).trim();
+        if (!it) return res.status(400).json({ error: '请填写项目/摘要' });
+        sets.push('item = ?'); params.push(it);
+      }
+      if (amount !== undefined) {
+        const amt = parseFloat(amount);
+        if (isNaN(amt)) return res.status(400).json({ error: '金额不合法' });
+        sets.push('amount = ?'); params.push(amt);
+      }
+      if (category !== undefined) { sets.push('category = ?'); params.push(String(category).trim()); }
+      if (note !== undefined) { sets.push('note = ?'); params.push(String(note).trim()); }
+
+      if (sets.length === 0) return res.status(400).json({ error: '没有需要修改的内容' });
+
+      params.push(req.params.id);
+      await db.query(`UPDATE main_opex SET ${sets.join(', ')} WHERE id = ?`, params);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.delete('/opex/:id', async (req, res) => {
+    try {
+      await ensureOpexTable(db);
+      await db.query('DELETE FROM main_opex WHERE id = ?', [req.params.id]);
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: e.message });

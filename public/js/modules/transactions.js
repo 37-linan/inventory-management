@@ -92,11 +92,12 @@ const TransactionsModule = {
           <h3 style="font-size:18px;">出入库台账 - ${label}系统</h3>
         </div>
       </div>
-      <!-- 三个标签页：入库表、出库表、信息台账 -->
+      <!-- 标签页：入库表、出库表、信息台账（第四个仅主系统可见） -->
       <div class="tabs">
         <div class="tab active" data-tab="inbound-form" onclick="TransactionsModule.switchTab('${system}','inbound-form',this)">入库登记单</div>
         <div class="tab" data-tab="outbound-form" onclick="TransactionsModule.switchTab('${system}','outbound-form',this)">出库信息单</div>
         <div class="tab" data-tab="ledger" onclick="TransactionsModule.switchTab('${system}','ledger',this)">信息台账</div>
+        ${system === 'main' ? `<div class="tab" data-tab="opex" onclick="TransactionsModule.switchTab('${system}','opex',this)">成本台账</div>` : ''}
       </div>
       <div id="transactions-content-${system}"></div>
     `;
@@ -111,6 +112,7 @@ const TransactionsModule = {
 
     if (tab === 'inbound-form') this.renderInboundTab(system);
     else if (tab === 'outbound-form') this.renderOutboundTab(system);
+    else if (tab === 'opex') this.renderOpexTab(system);
     else if (tab === 'ledger') {
       // 每次进信息台账都重新拉一次，避免新登记的数据/盈亏还在用旧缓存
       this._ledgerData = null;
@@ -2382,8 +2384,247 @@ const TransactionsModule = {
   },
 
   // ================================================================
+  //  标签页4：成本台账（运营成本 · 手工记账本）
+  //  ❗ 只记运营支出（投流 / 运费 / 包装 / 平台费 / 工具订阅…），
+  //     与商品采购成本（入库单金额）是两回事，别混到盈亏总览里
+  // ================================================================
+  async renderOpexTab(system) {
+    const container = document.getElementById(`transactions-content-${system}`);
+    if (!container) return;
+    this._opexSystem = system;
+    container.innerHTML = `
+      <div class="card" style="border:2px solid #fff3e0;">
+        <div class="card-header" style="background:#fff3e0;">
+          <h3 style="color:#e65100;">成本台账（运营成本）</h3>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="opex-count-label" style="font-size:12px;color:var(--text-light);">加载中…</span>
+            <button class="btn btn-sm btn-primary" onclick="TransactionsModule.showOpexForm()">＋ 记一笔</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding:0;">
+          <div class="table-wrapper">
+            <table class="opex-doc">
+              <thead>
+                <tr>
+                  <th style="width:104px;">日期</th>
+                  <th>项目 / 摘要</th>
+                  <th style="width:110px;">类别</th>
+                  <th style="width:120px;text-align:right;">金额</th>
+                  <th style="width:84px;"></th>
+                </tr>
+              </thead>
+              <tbody id="opex-table-body">
+                <tr><td colspan="5" class="opex-empty">加载中…</td></tr>
+              </tbody>
+              <tfoot id="opex-table-foot"></tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text-light);margin-top:10px;line-height:1.8;">
+        这里只记<b>运营成本</b>（投流、运费、包装、平台费、工具订阅…），不含商品采购成本。<br>
+        按发生日期归月，月份倒序（新月份在上），每月一行小计；金额填负数表示退款 / 冲抵。
+      </div>
+    `;
+    await this._loadOpex(system);
+  },
+
+  async _loadOpex(system) {
+    const sys = system || this._opexSystem || 'main';
+    try {
+      const rows = await API.get(`/api/${sys}/opex`);
+      this._opexRecords = rows || [];
+      this._renderOpexList();
+    } catch (e) {
+      const tb = document.getElementById('opex-table-body');
+      if (tb) tb.innerHTML = `<tr><td colspan="5" class="opex-empty" style="color:var(--danger);">加载失败：${this._escHtml(e.message || '')}</td></tr>`;
+    }
+  },
+
+  _renderOpexList() {
+    const tbody = document.getElementById('opex-table-body');
+    if (!tbody) return;
+    const foot = document.getElementById('opex-table-foot');
+    const label = document.getElementById('opex-count-label');
+    const recs = this._opexRecords || [];
+    const total = recs.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+    if (label) label.textContent = `共 ${recs.length} 笔 · 累计 ${this._fmtMoneySep(total)}`;
+    if (recs.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" class="opex-empty">还没有记录。点右上角「＋ 记一笔」开始记账。</td></tr>`;
+      if (foot) foot.innerHTML = '';
+      return;
+    }
+
+    // 按「发生日期」的月份分组（不是录入时间），月份倒序、组内日期倒序
+    const groups = {};
+    recs.forEach(r => {
+      const m = String(r.cost_date || '').slice(0, 7) || '（无日期）';
+      (groups[m] || (groups[m] = [])).push(r);
+    });
+    const months = Object.keys(groups).sort().reverse();
+
+    let html = '';
+    months.forEach(m => {
+      const rows = groups[m].slice().sort((a, b) => {
+        const da = String(a.cost_date || ''), db = String(b.cost_date || '');
+        if (da !== db) return da < db ? 1 : -1;
+        return (b.id || 0) - (a.id || 0);
+      });
+      const sum = rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+      html += `<tr class="opex-month">
+        <td colspan="5">
+          <span>${this._escHtml(this._fmtMonth(m))}</span>
+          <span style="margin-left:10px;font-weight:normal;color:var(--text-light);">${rows.length} 笔</span>
+          <span class="opex-month-sum">本月 ${this._fmtMoneySep(sum)}</span>
+        </td>
+      </tr>`;
+
+      rows.forEach(r => {
+        const amt = Number(r.amount) || 0;
+        html += `<tr class="opex-row">
+          <td class="opex-date">${this._escHtml(r.cost_date || '')}</td>
+          <td>${this._escHtml(r.item || '')}${r.note ? `<div class="opex-note">${this._escHtml(r.note)}</div>` : ''}</td>
+          <td>${r.category ? `<span class="badge opex-cat">${this._escHtml(r.category)}</span>` : '<span style="color:var(--text-light);">—</span>'}</td>
+          <td class="opex-amount"${amt < 0 ? ' style="color:#2e7d32;"' : ''}>${this._fmtMoneySep(amt)}</td>
+          <td class="opex-act" style="text-align:right;white-space:nowrap;">
+            <a onclick="TransactionsModule.showOpexForm(${r.id})">改</a>
+            <a class="opex-del" onclick="TransactionsModule.deleteOpex(${r.id})">删</a>
+          </td>
+        </tr>`;
+      });
+    });
+    tbody.innerHTML = html;
+
+    if (foot) {
+      foot.innerHTML = `<tr class="opex-total">
+        <td colspan="3" style="text-align:right;">合计 ${recs.length} 笔</td>
+        <td style="text-align:right;">${this._fmtMoneySep(total)}</td>
+        <td></td>
+      </tr>`;
+    }
+  },
+
+  // 记一笔 / 改一笔（同一个弹窗，靠 _opexEditingId 区分）
+  showOpexForm(id) {
+    const rec = id ? (this._opexRecords || []).find(r => r.id === id) : null;
+    this._opexEditingId = rec ? rec.id : null;
+    // 类别候选取已用过的，只提示不限制
+    const cats = [...new Set((this._opexRecords || [])
+      .map(r => String(r.category || '').trim()).filter(Boolean))].sort();
+
+    document.getElementById('modal-body').innerHTML = `
+      <div class="form-grid">
+        <div class="form-group">
+          <label>日期 <span style="color:var(--danger)">*</span></label>
+          <input type="date" id="opex-date" />
+        </div>
+        <div class="form-group">
+          <label>项目 / 摘要 <span style="color:var(--danger)">*</span></label>
+          <input type="text" id="opex-item" placeholder="例如：抖音千川投流" />
+        </div>
+        <div class="form-group">
+          <label>类别</label>
+          <input type="text" id="opex-category" list="opex-cat-options" placeholder="例如：推广 / 运费 / 包装" />
+          <datalist id="opex-cat-options">${cats.map(c => `<option value="${this._escHtml(c)}"></option>`).join('')}</datalist>
+        </div>
+        <div class="form-group">
+          <label>金额 <span style="color:var(--danger)">*</span></label>
+          <input type="number" id="opex-amount" step="0.01" placeholder="0.00" />
+        </div>
+        <div class="form-group" style="grid-column:1/-1;">
+          <label>备注</label>
+          <input type="text" id="opex-note" placeholder="可不填" />
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+        <button class="btn btn-primary" onclick="TransactionsModule._saveOpex()">${rec ? '保存修改' : '记一笔'}</button>
+      </div>
+      <div style="font-size:11px;color:var(--text-light);margin-top:10px;">金额填负数表示退款 / 冲抵。</div>
+    `;
+
+    // 值一律用 JS 赋（别拼进 HTML 属性，项目/备注里有引号会撑破）
+    document.getElementById('opex-date').value = rec ? (rec.cost_date || '') : this._todayLocal();
+    document.getElementById('opex-item').value = rec ? (rec.item || '') : '';
+    document.getElementById('opex-category').value = rec ? (rec.category || '') : '';
+    document.getElementById('opex-amount').value = rec ? (Number(rec.amount) || 0) : '';
+    document.getElementById('opex-note').value = rec ? (rec.note || '') : '';
+
+    showModal(rec ? '修改记录' : '记一笔（运营成本）');
+    const el = document.getElementById('opex-item');
+    if (el && el.focus) setTimeout(() => el.focus(), 200);
+  },
+
+  async _saveOpex() {
+    const system = this._opexSystem || 'main';
+    const date = (document.getElementById('opex-date').value || '').trim();
+    const item = (document.getElementById('opex-item').value || '').trim();
+    const category = (document.getElementById('opex-category').value || '').trim();
+    const amountRaw = (document.getElementById('opex-amount').value || '').trim();
+    const note = (document.getElementById('opex-note').value || '').trim();
+
+    if (!date) { showToast('请选择日期'); return; }
+    if (!item) { showToast('请填写项目/摘要'); return; }
+    if (amountRaw === '' || isNaN(parseFloat(amountRaw))) { showToast('请填写金额'); return; }
+
+    const body = { cost_date: date, item, category, amount: parseFloat(amountRaw), note };
+    const editId = this._opexEditingId;
+    try {
+      if (editId) await API.patch(`/api/${system}/opex/${editId}`, body);
+      else await API.post(`/api/${system}/opex`, body);
+      this._opexEditingId = null;
+      closeModal();
+      showToast(editId ? '已保存' : '已记一笔');
+      await this._loadOpex(system);
+    } catch (e) {
+      showToast('保存失败：' + (e.message || ''));
+    }
+  },
+
+  async deleteOpex(id) {
+    if (!confirm('确认删除这条成本记录？')) return;
+    const system = this._opexSystem || 'main';
+    try {
+      await API.del(`/api/${system}/opex/${id}`);
+      showToast('已删除');
+      await this._loadOpex(system);
+    } catch (e) {
+      showToast('删除失败');
+    }
+  },
+
+  // ================================================================
   //  通用辅助方法
   // ================================================================
+  // 今天（浏览器本地时区；❌ 别用 toISOString，会按 UTC 差 8 小时）
+  _todayLocal() {
+    const d = new Date();
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  },
+
+  // HTML 转义（用户填的项目/备注/类别要进 innerHTML）
+  _escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  },
+
+  // 金额带千分位（账本看着清楚）：1234.5 → ¥1,234.50
+  _fmtMoneySep(v) {
+    const n = Number(v) || 0;
+    const parts = Math.abs(n).toFixed(2).split('.');
+    return (n < 0 ? '-¥' : '¥') + parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + parts[1];
+  },
+
+  // 2026-09 → 2026年9月
+  _fmtMonth(m) {
+    const r = /^(\d{4})-(\d{2})$/.exec(String(m));
+    return r ? `${r[1]}年${parseInt(r[2], 10)}月` : String(m);
+  },
+
   async _loadChannelOptions(system) {
     const select = document.getElementById('inbound-channel');
     if (!select) return;
