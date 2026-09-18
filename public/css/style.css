@@ -680,9 +680,17 @@ table tr.row-color:hover td { background-color: var(--row-bg-hover); }
   display: flex;
   border-bottom: 2px solid var(--border);
   margin-bottom: 16px;
+  /* 标签多于 4 个时（如新增「成本台账」）窄屏会挤出可视区 → 允许横向滑动，绝不裁切 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+.tabs::-webkit-scrollbar { display: none; }
 
 .tab {
+  flex: 0 0 auto;        /* 不被压缩，保证文字完整 */
+  white-space: nowrap;
   padding: 10px 20px;
   cursor: pointer;
   color: var(--text-secondary);
@@ -695,6 +703,11 @@ table tr.row-color:hover td { background-color: var(--row-bg-hover); }
 
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+/* 窄屏：收紧标签内边距，4 个标签也能一屏放下 */
+@media (max-width: 520px) {
+  .tab { padding: 10px 12px; font-size: 12.5px; }
+}
 
 /* ========== Stats Grid ========== */
 .stats-grid {
