@@ -20,7 +20,29 @@ const TransactionsModule = {
   // 入库表「单号组」的折叠状态，key = 订单号（无单号的用「（无单号）」）
   // ❗ 必须记在状态里而不是只看 DOM：设颜色/行内编辑/删除后表格会整块重绘，
   //    DOM 上的 display:none 会全部丢失 → 之前收起来的组全部弹开（2026-09-18 修复）
+  // ❗ 而且必须落盘：只放内存 Set 的话，关掉网页重开就全忘了、又全变回展开（2026-09-19 修复）
   _collapsedGroups: new Set(),
+
+  // 折叠状态的存储位置：按系统分开存（main / douyin 互不影响）
+  _collapsedStorageKey(system) {
+    return `inbound_collapsed_${system || this.currentSystem || 'main'}`;
+  },
+
+  // 从本地存储读回收起状态（进页面 / 换系统时调用）
+  _loadCollapsedGroups(system) {
+    this._collapsedGroups = new Set();
+    try {
+      const raw = localStorage.getItem(this._collapsedStorageKey(system));
+      if (raw) JSON.parse(raw).forEach(k => this._collapsedGroups.add(k));
+    } catch (e) { /* 无痕模式或数据损坏：当没记录处理，不影响使用 */ }
+  },
+
+  // 把收起状态写回本地存储（每次折叠/展开后调用）
+  _persistCollapsedGroups(system) {
+    try {
+      localStorage.setItem(this._collapsedStorageKey(system), JSON.stringify([...this._collapsedGroups]));
+    } catch (e) { /* 存不下就算了，本会话内的折叠仍然有效 */ }
+  },
 
   // 生成行颜色标记HTML（整格填色，点击弹出选色器）
   _renderColorCell(rowId, type, currentColor) {
@@ -83,6 +105,7 @@ const TransactionsModule = {
 
   async render(system) {
     this.currentSystem = system;
+    this._loadCollapsedGroups(system);   // 读回上次的收起状态，重开网页也记得
     const container = document.getElementById(`page-${system}-ledger`);
     const label = system === 'main' ? '主' : '抖音刷券';
 
@@ -563,6 +586,8 @@ const TransactionsModule = {
       if (collapsed) this._collapsedGroups.delete(key);   // 展开
       else this._collapsedGroups.add(key);                // 收起
     }
+    // 落盘：关掉网页重新打开后，这一单仍然是收起的
+    this._persistCollapsedGroups(this._inboundSystem || this.currentSystem || 'main');
   },
 
   // ===== 行内编辑：点一下「数量 / 渠道 / 价格」就地改，不用删了重填 =====
