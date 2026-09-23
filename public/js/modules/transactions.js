@@ -825,18 +825,27 @@ const TransactionsModule = {
       let detailRows = '';
       if (res.detail && res.detail.length) {
         detailRows = res.detail.map((r, i) => {
-          const saleFormula = r.out_qty > 0
-            ? `¥${(r.next_day_price || 0).toFixed(2)} × ${r.in_qty}（本单内数量） = <strong>¥${r.sale.toFixed(2)}</strong>`
-            : '<span style="color:var(--text-light);">未出库，无销售</span>';
-          const statusBadge = r.out_qty > 0
-            ? (r.await_price
-                ? '<span class="badge badge-stock-low" title="出库次日行情还没到，明天录价后自动重算">待次日行情</span>'
-                : (r.next_day_price > 0 ? '<span class="badge badge-stock-normal">已算</span>' : '<span class="badge badge-stock-low">待行情</span>'))
-            : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>';
+          // 套装（2026-09-23）：同一套装的多个编码合成一套，销售额只记在「代表行」上，
+          // 其余组成商品标出「组成」，避免看起来像被漏算了
+          const setTag = r.is_set
+            ? `<span class="badge" style="background:#ede7f6;color:#5e35b1;margin-left:4px;font-size:10px;">套装${r.set_name ? ' · ' + r.set_name : ''}${r.set_member ? '（组成）' : ''}</span>`
+            : '';
+          const saleFormula = r.set_member
+            ? '<span style="color:var(--text-light);">并入套装行计价（不再单独算）</span>'
+            : (r.out_qty > 0
+                ? `¥${(r.next_day_price || 0).toFixed(2)} × ${r.is_set ? this._fmtQty(r.set_units || 0) + '（套数）' : r.in_qty + '（本单内数量）'} = <strong>¥${r.sale.toFixed(2)}</strong>`
+                : '<span style="color:var(--text-light);">未出库，无销售</span>');
+          const statusBadge = r.set_member
+            ? '<span class="badge" style="background:#ede7f6;color:#5e35b1;">套装组成</span>'
+            : (r.out_qty > 0
+                ? (r.await_price
+                    ? '<span class="badge badge-stock-low" title="出库次日行情还没到，明天录价后自动重算">待次日行情</span>'
+                    : (r.next_day_price > 0 ? '<span class="badge badge-stock-normal">已算</span>' : '<span class="badge badge-stock-low">待行情</span>'))
+                : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>');
           return `
             <tr style="border-bottom:1px solid var(--border);">
               <td style="padding:8px;vertical-align:top;">
-                <div style="font-size:12px;"><code>${r.code}</code></div>
+                <div style="font-size:12px;"><code>${r.code}</code>${setTag}</div>
                 <div style="font-size:13px;font-weight:600;">${r.name}</div>
                 <div style="font-size:11px;color:var(--text-secondary);">本单入库 ${r.in_qty}，本单已出 ${r.out_qty}</div>
               </td>
@@ -861,7 +870,7 @@ const TransactionsModule = {
       let summaryText;
       if (!res.has_out) summaryText = '<span style="color:var(--text-secondary);">尚未出库，无法计算</span>';
       else if (!res.has_market) summaryText = '<span style="color:var(--text-secondary);">出库次日行情未录，暂无法计算</span>';
-      else summaryText = `<strong>销售 ${res.detail.filter(r => r.out_qty > 0).length} 项</strong> = ¥${sale.toFixed(2)}`;
+      else summaryText = `<strong>销售 ${res.detail.filter(r => r.out_qty > 0 && !r.set_member).length} 项</strong> = ¥${sale.toFixed(2)}`;
 
       document.getElementById('modal-body').innerHTML = `
         <div style="padding:4px 0;">
@@ -1322,9 +1331,9 @@ const TransactionsModule = {
         return `<tr style="cursor:pointer;${sel ? 'background:#e8f0fe;' : ''}" onclick="TransactionsModule._pickSelect(${i})" title="点一下选中这个商品">
           <td style="text-align:center;color:var(--primary);font-weight:600;">${sel ? '✓' : ''}</td>
           <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${p.code}</code></td>
-          <td style="font-size:12px;">${p.name || '-'}</td>
+          <td style="font-size:12px;">${p.name || '-'}${(p.set_name || '').trim() ? `<span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;margin-left:4px;" title="套装 · ${TransactionsModule._escHtml(p.set_name)}">套装</span>` : ''}</td>
           <td style="font-size:12px;color:var(--text-secondary);">${p.spec || '-'}</td>
-          <td style="text-align:right;font-weight:600;color:${stock > 0 ? 'var(--primary)' : 'var(--text-light)'};">${this._fmtQty(stock)}</td>
+          <td style="text-align:right;font-weight:600;color:${stock > 0 ? 'var(--primary)' : 'var(--text-light)'};">${this._fmtQty(stock)}${(p.set_name || '').trim() ? ' 套' : ''}</td>
         </tr>`;
       }).join('');
     }
@@ -1357,7 +1366,7 @@ const TransactionsModule = {
     el.innerHTML = `
       <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
         ${p
-          ? `已选：<b style="color:var(--text);">${p.name || p.code}</b>　<code style="background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:11px;">${p.code}</code>　库存 <b>${this._fmtQty(stock)}</b>`
+          ? `已选：<b style="color:var(--text);">${p.name || p.code}</b>　<code style="background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:11px;">${p.code}</code>　库存 <b>${this._fmtQty(stock)}</b>${(p.set_name || '').trim() ? ' 套' : ''}${(p.set_name || '').trim() ? `　<span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;">套装 · ${this._escHtml(p.set_name)}</span>` : ''}`
           : '请在上面点一下，选中要出库的商品'}
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -2229,12 +2238,12 @@ const TransactionsModule = {
                       <td>${TransactionsModule._renderColorCell(r.id, 'outbound', r.row_color)}</td>
                       <td style="white-space:nowrap;font-size:12px;">${this._fmtDateTime(r.created_at)}</td>
                       <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
-                      <td>${r.product_name || '-'}</td>
+                      <td>${r.product_name || '-'}${(r.set_name || '').trim() ? `<span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;margin-left:4px;" title="套装 · ${TransactionsModule._escHtml(r.set_name)}">套装${r.set_member ? '（组成）' : ''}</span>` : ''}</td>
                       <td>${r.product_spec || '-'}</td>
                       <td style="text-align:center;">${showBq && bq > 1 ? '<span style="color:#fbbc04;font-weight:500;">×' + bq + '</span>' : '<span style="color:#bbb;">-</span>'}</td>
                       <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
                       <td>${r.location || '-'}</td>
-                      <td title="${r.price_date ? '行情取自 ' + r.price_date : ''}">${r.sale_price ? '¥' + r.sale_price : '-'}</td>
+                      <td title="${r.price_date ? '行情取自 ' + r.price_date : ''}">${r.set_member ? '<span style="color:var(--text-light);" title="同一套装只在代表行记一次整套销售额">并入套装</span>' : (r.sale_price ? '¥' + r.sale_price : '-')}</td>
                       <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule._deleteLedgerRecord('${sys}','outbound',${r.id})">删除</button></td>
                     </tr>`;
                     }).join('')}

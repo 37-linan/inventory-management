@@ -94,6 +94,7 @@ const ProductsModule = {
                         </td>
                         <td>
                           <strong>${p.name}</strong>
+                          ${(p.set_name || '').trim() ? `<span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;margin-left:4px;" title="套装：整套一个价，算利润时每套只算一次">套装 · ${ProductsModule._esc(p.set_name)}</span>` : ''}
                           ${(!p.type || !p.spec || !p.unit) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}
                         </td>
                         <td>${p.spec || '<span style="color:#bbb;">-</span>'}</td>
@@ -224,6 +225,20 @@ const ProductsModule = {
           <input type="number" id="product-bundle-qty" value="1" min="1" max="999" />
           <div style="font-size:11px;color:var(--text-light);margin-top:4px;">入库 × 套组数量 = 实际库存</div>
         </div>`}
+        <div class="form-group">
+          <label>是否套装</label>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <select id="product-is-set" onchange="ProductsModule._onSetChange('product')" style="flex:0 0 110px;">
+              <option value="0">否</option>
+              <option value="1">是</option>
+            </select>
+            <input type="text" id="product-set-name" placeholder="套装名，如：礼盒A" style="flex:1;display:none;" />
+          </div>
+          <div id="product-set-hint" style="display:none;font-size:11px;color:var(--text-light);margin-top:4px;line-height:1.5;">
+            同一个套装的每个组成商品（不同编码）都填<b>同一个套装名</b>；行情价录的是<b>整套</b>的价格，
+            系统算利润时每套只算一次，不会按每个编码各算一遍。
+          </div>
+        </div>
         <div class="form-actions">
           <button type="submit" class="btn btn-primary btn-lg">保存</button>
           <button type="button" class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
@@ -233,6 +248,26 @@ const ProductsModule = {
 
     // 加载类型选项
     this._loadTypeOptions(system);
+  },
+
+  // 「是否套装」切换：选"是"才显示套装名输入框（新增/编辑共用，prefix 区分两套表单的 id）
+  _onSetChange(prefix) {
+    const sel = document.getElementById(prefix === 'edit' ? 'edit-product-is-set' : 'product-is-set');
+    const on = sel && sel.value === '1';
+    const nameEl = document.getElementById(prefix === 'edit' ? 'edit-product-set-name' : 'product-set-name');
+    const hintEl = document.getElementById(prefix === 'edit' ? 'edit-product-set-hint' : 'product-set-hint');
+    if (nameEl) nameEl.style.display = on ? '' : 'none';
+    if (hintEl) hintEl.style.display = on ? '' : 'none';
+  },
+
+  // HTML 转义：套装名等用户输入要拼进 innerHTML，必须转义再拼
+  _esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   },
 
   async _loadTypeOptions(system) {
@@ -261,14 +296,21 @@ const ProductsModule = {
     const marketPrice = document.getElementById('product-market-price').value;
     const type = system === 'main' ? document.getElementById('product-type').value : '抖音刷券';
     const bundleQty = type === '抖音刷券' ? parseInt(document.getElementById('product-bundle-qty')?.value) || 1 : 1;
+    // 是否套装：同一套装的组成商品（不同编码）填同一个套装名，系统据此按"套"计价
+    const isSet = (document.getElementById('product-is-set')?.value === '1');
+    const setName = isSet ? (document.getElementById('product-set-name')?.value || '').trim() : '';
 
     if (!code || !name) {
       showToast('请填写物品编码和名称');
       return;
     }
+    if (isSet && !setName) {
+      showToast('请填写套装名（同一个套装的商品都填同一个名字）');
+      return;
+    }
 
     try {
-      const body = { code, name, spec, unit, market_price: marketPrice, type };
+      const body = { code, name, spec, unit, market_price: marketPrice, type, is_set: isSet, set_name: setName };
       if (type === '抖音刷券') body.bundle_qty = bundleQty;
       // 统一用主系统 API 存储（按类型区分）
       const result = await API.post('/api/main/products', body);
@@ -616,6 +658,19 @@ const ProductsModule = {
             <label>套组数量</label>
             <input type="number" id="edit-bundle-qty" value="${product.bundle_qty || 1}" min="1" max="999" />
           </div>` : ''}
+          <div class="form-group">
+            <label>是否套装</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <select id="edit-product-is-set" onchange="ProductsModule._onSetChange('edit')" style="flex:0 0 110px;">
+                <option value="0" ${product.set_name ? '' : 'selected'}>否</option>
+                <option value="1" ${product.set_name ? 'selected' : ''}>是</option>
+              </select>
+              <input type="text" id="edit-product-set-name" value="${this._esc(product.set_name || '')}" placeholder="套装名，如：礼盒A" style="flex:1;${product.set_name ? '' : 'display:none;'}" />
+            </div>
+            <div id="edit-product-set-hint" style="font-size:11px;color:var(--text-light);margin-top:4px;line-height:1.5;${product.set_name ? '' : 'display:none;'}">
+              同一个套装的每个组成商品（不同编码）都填<b>同一个套装名</b>；行情价录的是<b>整套</b>的价格，算利润时每套只算一次。
+            </div>
+          </div>
           <div class="form-actions">
             <button type="submit" class="btn btn-primary btn-lg">保存修改</button>
             <button type="button" class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
@@ -642,15 +697,19 @@ const ProductsModule = {
     const typeEl = document.getElementById('edit-product-type');
     const type = typeEl ? typeEl.value : (system === 'douyin' ? '抖音刷券' : '');
     const bundleQty = parseInt(document.getElementById('edit-bundle-qty')?.value) || undefined;
+    // 是否套装（同一套装的组成商品填同一个套装名，系统据此按"套"计价）
+    const isSet = (document.getElementById('edit-product-is-set')?.value === '1');
+    const setName = isSet ? (document.getElementById('edit-product-set-name')?.value || '').trim() : '';
     // 编码（可修改，后端会级联同步历史记录）
     const codeInput = document.getElementById('edit-product-code');
     const newCode = codeInput ? codeInput.value.trim() : code;
 
     if (!name) { showToast('请填写物品名称'); return; }
     if (!newCode) { showToast('请填写物品编码'); return; }
+    if (isSet && !setName) { showToast('请填写套装名（同一个套装的商品都填同一个名字）'); return; }
 
     try {
-      const body = { code: newCode, name, spec, unit, market_price: marketPrice, type };
+      const body = { code: newCode, name, spec, unit, market_price: marketPrice, type, is_set: isSet, set_name: setName };
       if (bundleQty) body.bundle_qty = bundleQty;
       // 有 ID 则用 ID 更新（精确匹配），否则用 code+type
       const url = id ? `/api/main/products/id/${encodeURIComponent(id)}` : `/api/main/products/${encodeURIComponent(code)}?type=${encodeURIComponent(type)}`;

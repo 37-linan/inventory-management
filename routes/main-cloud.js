@@ -91,6 +91,57 @@ function pickMarketPrice(priceMap, code, outDay) {
 }
 
 // ============================================================================
+// 套装（2026-09-23）
+// ----------------------------------------------------------------------------
+// 场景：一个套装由多个「不同编码」的商品组成（如 A、B 两个编码），它们在商品表里
+//       各自一条记录，但都填同一个「套装名」→ 视为同一套；名称/规格/单位/行情/类型相同。
+//       入库时这些编码会被分别扫到，同一张单里因此出现多条记录（这是正常的，别去重）。
+// 口径：一整套只对应一个行情价（每个组成商品都录同一个价，系统只取一次），
+//       套数 = 组内「第一个编码」的数量合计，销售额 = 套价 × 套数。
+//       ❌ 不能按「每个编码各自的行情价 × 数量」相加 —— 那样一套会被算成 N 倍。
+//       出库：组内有任一条出库，即视为这一套已出库（出库日取组内第一条有出库日的）。
+// ============================================================================
+let setColsReady = null;
+function ensureSetColumns(db) {
+  if (!setColsReady) {
+    setColsReady = db.query("ALTER TABLE main_products ADD COLUMN IF NOT EXISTS is_set BOOLEAN NOT NULL DEFAULT FALSE")
+      .then(() => db.query("ALTER TABLE main_products ADD COLUMN IF NOT EXISTS set_name VARCHAR(100) DEFAULT NULL"))
+      .catch(e => { setColsReady = null; throw e; });   // 失败允许下次重试
+  }
+  return setColsReady;
+}
+
+// { code: set_name }，同 code 多条取最后一条（与 /order-profit 里 nameMap 口径一致）
+async function loadSetNameMap(db) {
+  const r = await db.query("SELECT code, set_name FROM main_products WHERE set_name IS NOT NULL AND set_name <> '' ORDER BY id ASC");
+  const map = {};
+  r.rows.forEach(x => { map[x.code] = String(x.set_name).trim(); });
+  return map;
+}
+
+// 把一张单内的入库记录按套装归组（组内按 id 升序；普通商品自成一组）
+// 返回 [{ set_name, isSet, items: [...] }]
+function groupItemsBySet(items, setMap) {
+  const groups = [];
+  const pos = {};
+  (items || []).slice().sort((a, b) => a.id - b.id).forEach(it => {
+    const sn = setMap[it.product_code] || '';
+    if (!sn) { groups.push({ set_name: '', isSet: false, items: [it] }); return; }
+    if (pos[sn] === undefined) { pos[sn] = groups.length; groups.push({ set_name: sn, isSet: true, items: [it] }); }
+    else groups[pos[sn]].items.push(it);
+  });
+  return groups;
+}
+
+// 一个套装组的「套数」= 组内第一个编码的数量合计（同编码出现多条时相加）
+function setUnitsOf(group) {
+  const firstCode = group.items[0].product_code;
+  return group.items
+    .filter(x => x.product_code === firstCode)
+    .reduce((s, x) => s + (Number(x.quantity) || 0), 0);
+}
+
+// ============================================================================
 // 成本台账（运营成本）建表 —— 幂等，首次访问 /opex 时自动建，一次
 // 只记「运营支出」（投流、运费、包装、平台费…），**与商品采购成本无关**
 // ============================================================================
@@ -115,6 +166,12 @@ function ensureOpexTable(db) {
 
 module.exports = function(db) {
   const router = express.Router();
+
+  // 套装字段（is_set / set_name）：利润、库存、台账都要读它，放在最前面保证第一次
+  // 请求之前列就存在（幂等，内部只真正执行一次，之后直接放行）
+  router.use(async (req, res, next) => {
+    try { await ensureSetColumns(db); next(); } catch (e) { next(e); }
+  });
 
   // ========== 产品信息管理 ==========
 
@@ -195,16 +252,24 @@ module.exports = function(db) {
 
   router.post('/products', async (req, res) => {
     try {
-      const { code, name, spec, unit, market_price, type, gift_of, bundle_qty } = req.body;
+      await ensureSetColumns(db);
+      const { code, name, spec, unit, market_price, type, gift_of, bundle_qty, is_set, set_name } = req.body;
       if (!code || !name) return res.status(400).json({ error: '编码和名称为必填项' });
+
+      // 勾了「套装」就必须填套装名：同一套装的各组成商品靠这个名归组（详见文件顶部套装说明）
+      const setFlag = is_set === true || is_set === 'true' || is_set === 1 || is_set === '1';
+      const setName = setFlag ? String(set_name || '').trim() : '';
+      if (setFlag && !setName) {
+        return res.status(400).json({ error: '勾选套装后必须填写套装名，同一套装的每个商品都填同一个名字' });
+      }
 
       // 不做重复检查，同一个编码可在不同类型和不同套餐中重复出现
       const result = await db.query(
-        'INSERT INTO main_products (code, name, spec, unit, market_price, type, gift_of, bundle_qty) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
-        [code, name, spec || '', unit || '', market_price || '', type || '', gift_of || null, parseInt(bundle_qty) || 1]
+        'INSERT INTO main_products (code, name, spec, unit, market_price, type, gift_of, bundle_qty, is_set, set_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
+        [code, name, spec || '', unit || '', market_price || '', type || '', gift_of || null, parseInt(bundle_qty) || 1, setFlag, setName || null]
       );
 
-      res.json({ success: true, id: result.rows[0].id, gift_of: gift_of || null });
+      res.json({ success: true, id: result.rows[0].id, gift_of: gift_of || null, is_set: setFlag, set_name: setName || null });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -212,23 +277,29 @@ module.exports = function(db) {
 
   router.put('/products/:code', async (req, res) => {
     try {
-      const { name, spec, unit, market_price, type, gift_of, bundle_qty } = req.body;
+      await ensureSetColumns(db);
+      const { name, spec, unit, market_price, type, gift_of, bundle_qty, is_set, set_name } = req.body;
       const existing = await db.query('SELECT id FROM main_products WHERE code = ?', [req.params.code]);
       if (!existing.rows[0]) return res.status(404).json({ error: '产品不存在' });
 
-      // 支持更新 gift_of 字段
-      if (gift_of !== undefined) {
-        await db.query(
-          `UPDATE main_products SET name=?, spec=?, unit=?, market_price=?, type=?, gift_of=?, bundle_qty=?, updated_at=CURRENT_TIMESTAMP WHERE code=?`,
-          [name, spec, unit, market_price, type, gift_of || null, parseInt(bundle_qty) || 1, req.params.code]
-        );
-      } else {
-        await db.query(
-          `UPDATE main_products SET name=?, spec=?, unit=?, market_price=?, type=?, bundle_qty=?, updated_at=CURRENT_TIMESTAMP WHERE code=?`,
-          [name, spec, unit, market_price, type, parseInt(bundle_qty) || 1, req.params.code]
-        );
+      const sets = ['name=?', 'spec=?', 'unit=?', 'market_price=?', 'type=?', 'bundle_qty=?', 'updated_at=CURRENT_TIMESTAMP'];
+      const params = [name, spec, unit, market_price, type, parseInt(bundle_qty) || 1];
+
+      // gift_of：只在前端显式传了才更新
+      if (gift_of !== undefined) { sets.push('gift_of=?'); params.push(gift_of || null); }
+
+      // 套装字段：同样「传了才更新」—— 否则旧缓存的页面保存时会把套装标记抹掉
+      if (is_set !== undefined) {
+        const setFlag = is_set === true || is_set === 'true' || is_set === 1 || is_set === '1';
+        const setName = setFlag ? String(set_name || '').trim() : '';
+        if (setFlag && !setName) return res.status(400).json({ error: '勾选套装后必须填写套装名' });
+        sets.push('is_set=?'); params.push(setFlag);
+        sets.push('set_name=?'); params.push(setName || null);
       }
-      
+
+      params.push(req.params.code);
+      await db.query(`UPDATE main_products SET ${sets.join(', ')} WHERE code=?`, params);
+
       res.json({ success: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -238,7 +309,8 @@ module.exports = function(db) {
   // 按 ID 更新产品（精确匹配，同编码不同规格用）
   router.put('/products/id/:id', async (req, res) => {
     try {
-      const { name, spec, unit, market_price, type, bundle_qty, code } = req.body;
+      await ensureSetColumns(db);
+      const { name, spec, unit, market_price, type, bundle_qty, code, is_set, set_name } = req.body;
       // 当前产品编码
       const cur = await db.query('SELECT code FROM main_products WHERE id = ?', [req.params.id]);
       if (!cur.rows[0]) return res.status(404).json({ error: '产品不存在' });
@@ -257,10 +329,18 @@ module.exports = function(db) {
         await db.query('UPDATE main_price_history SET product_code = ? WHERE product_code = ?', [newCode, oldCode]);
       }
 
-      await db.query(
-        `UPDATE main_products SET code=?, name=?, spec=?, unit=?, market_price=?, type=?, bundle_qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-        [newCode, name, spec, unit, market_price, type || '', parseInt(bundle_qty) || 1, req.params.id]
-      );
+      const sets2 = ['code=?', 'name=?', 'spec=?', 'unit=?', 'market_price=?', 'type=?', 'bundle_qty=?', 'updated_at=CURRENT_TIMESTAMP'];
+      const params2 = [newCode, name, spec, unit, market_price, type || '', parseInt(bundle_qty) || 1];
+      // 套装字段「传了才更新」，避免旧页面保存时抹掉标记
+      if (is_set !== undefined) {
+        const setFlag = is_set === true || is_set === 'true' || is_set === 1 || is_set === '1';
+        const setName = setFlag ? String(set_name || '').trim() : '';
+        if (setFlag && !setName) return res.status(400).json({ error: '勾选套装后必须填写套装名' });
+        sets2.push('is_set=?'); params2.push(setFlag);
+        sets2.push('set_name=?'); params2.push(setName || null);
+      }
+      params2.push(req.params.id);
+      await db.query(`UPDATE main_products SET ${sets2.join(', ')} WHERE id=?`, params2);
       res.json({ success: true, renamed: newCode !== oldCode });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -524,6 +604,32 @@ module.exports = function(db) {
         };
       });
 
+      // 套装（2026-09-23）：一组商品的库存各自独立记，但"能组成几套"取决于最缺的那个
+      // → 可成套数 = 同套装名下各编码库存的最小值；并统一把 is_set / set_name 归一化
+      const setCodes = {};
+      inventory.forEach(p => {
+        const sn = (p.set_name || '').trim();
+        if (!sn) return;
+        (setCodes[sn] || (setCodes[sn] = new Set())).add(p.code);
+      });
+      const setStock = {};
+      Object.keys(setCodes).forEach(sn => {
+        let min = Infinity;
+        setCodes[sn].forEach(c => {
+          const sum = inventory
+            .filter(x => x.code === c && (x.set_name || '').trim() === sn)
+            .reduce((s, x) => s + (Number(x.stock) || 0), 0);
+          min = Math.min(min, sum);
+        });
+        setStock[sn] = isFinite(min) ? min : 0;
+      });
+      inventory.forEach(p => {
+        const sn = (p.set_name || '').trim();
+        p.set_name = sn || null;
+        p.is_set = !!sn;
+        p.set_units = sn ? (setStock[sn] || 0) : 0;   // 这套还能组成几套
+      });
+
       const recentInbound = await db.query(`
         SELECT i.*,
                (SELECT name FROM main_products p WHERE p.code = i.product_code ORDER BY p.id DESC LIMIT 1) as product_name,
@@ -692,43 +798,81 @@ module.exports = function(db) {
       let allOut = true;    // 本单是否全部出完
       const detail = [];
 
-      for (const item of orderItems) {
-        const code = item.product_code;
-        const inQty = Number(item.quantity) || 0;
+      // 按套装归组：同一单里同「套装名」的多个编码合成一套，只算一次套价（详见文件顶部套装说明）
+      const setMap = await loadSetNameMap(db);
+      const groups = groupItemsBySet(orderItems, setMap);
 
-        // 本单这一条入库记录，按 FIFO 实际被出库消耗掉多少
-        const a = alloc[item.id] || { out_qty: 0, out_date: '' };
-        const outQty = Number(a.out_qty) || 0;
-        const outDate = a.out_date || '';
-        if (outQty < inQty) allOut = false;
+      for (const g of groups) {
+        // 组内每条入库记录的真实出库情况（FIFO）
+        const rows = g.items.map(it => {
+          const a = alloc[it.id] || { out_qty: 0, out_date: '' };
+          const inQty = Number(it.quantity) || 0;
+          const outQty = Number(a.out_qty) || 0;
+          if (outQty < inQty) allOut = false;
+          return { it, code: it.product_code, inQty, outQty, outDate: a.out_date || '' };
+        });
+        // 出库日：取组内第一条有出库日的记录（套装成套出库，各条一般同一天）
+        const anyOut = rows.find(x => x.outDate);
+        const groupOutDate = anyOut ? anyOut.outDate : '';
 
-        const row = {
-          code, name: nameMap[code] || code,
-          in_qty: inQty, out_qty: outQty,
-          out_date: outDate,
-          next_day: outDate ? nextDayOf(outDate) : '',   // 字面次日（出库日+1）
-          price_date: '',                                 // 行情价实际取自哪一天
-          next_day_price: 0,
-          sale: 0,
-          // 出库日次日还没到（今天才出库）→ 现在用的价只是暂计，
-          // 明天录了次日价会自动改用次日价重算，前端提示「待次日行情」
-          await_price: false
-        };
-        // 只有真的出库了、且次日还没到来，才算「等次日行情」
-        row.await_price = !!(outQty > 0 && row.next_day && row.next_day > today);
+        if (!g.isSet) {
+          // ---- 普通商品：一条记录算一次（原口径不变）----
+          const x = rows[0];
+          const row = {
+            code: x.code, name: nameMap[x.code] || x.code,
+            in_qty: x.inQty, out_qty: x.outQty,
+            out_date: x.outDate,
+            next_day: x.outDate ? nextDayOf(x.outDate) : '',   // 字面次日（出库日+1）
+            price_date: '',                                     // 行情价实际取自哪一天
+            next_day_price: 0,
+            sale: 0,
+            is_set: false, set_name: '', set_member: false, set_units: 0,
+            // 出库日次日还没到（今天才出库）→ 现在用的价只是暂计，
+            // 明天录了次日价会自动改用次日价重算，前端提示「待次日行情」
+            await_price: false
+          };
+          row.await_price = !!(x.outQty > 0 && row.next_day && row.next_day > today);
 
-        if (outQty > 0) {
-          hasOut = true;
-          const mp = pickMarketPrice(priceMap, code, outDate);
-          const salePrice = mp ? mp.price : 0;
-          if (mp) row.price_date = mp.date;
-          row.next_day_price = salePrice;
-          // 销售额 = 行情价 × 本单该商品的全部数量
-          const saleTotal = salePrice * inQty;
-          totalSale += saleTotal;
-          row.sale = Number(saleTotal.toFixed(2));
+          if (x.outQty > 0) {
+            hasOut = true;
+            const mp = pickMarketPrice(priceMap, x.code, x.outDate);
+            const salePrice = mp ? mp.price : 0;
+            if (mp) row.price_date = mp.date;
+            row.next_day_price = salePrice;
+            // 销售额 = 行情价 × 本单该商品的全部数量
+            row.sale = Number((salePrice * x.inQty).toFixed(2));
+            totalSale += salePrice * x.inQty;
+          }
+          detail.push(row);
+          continue;
         }
-        detail.push(row);
+
+        // ---- 套装：组内任一条出库 → 这一套视为已出库；整套只算一次价 ----
+        const setOut = rows.some(x => x.outQty > 0);
+        const units = setUnitsOf(g);                       // 套数 = 组内第一个编码的数量合计
+        const mp = (setOut && groupOutDate)
+          ? pickMarketPrice(priceMap, g.items[0].product_code, groupOutDate)
+          : null;
+        const salePrice = mp ? mp.price : 0;
+        const awaitFlag = !!(setOut && groupOutDate && nextDayOf(groupOutDate) > today);
+        if (setOut) {
+          hasOut = true;
+          totalSale += salePrice * units;                  // ✅ 一套只算一次（不再按每个编码各算一遍）
+        }
+        rows.forEach((x, i) => {
+          detail.push({
+            code: x.code, name: nameMap[x.code] || x.code,
+            in_qty: x.inQty, out_qty: x.outQty,
+            out_date: i === 0 ? (x.outDate || groupOutDate) : x.outDate,
+            next_day: groupOutDate ? nextDayOf(groupOutDate) : '',
+            price_date: mp ? mp.date : '',
+            next_day_price: salePrice,
+            // 销售额只记在「代表行」（组内第一条）上，其余组成商品不再单独计价
+            sale: (i === 0 && setOut) ? Number((salePrice * units).toFixed(2)) : 0,
+            is_set: true, set_name: g.set_name, set_member: i > 0, set_units: units,
+            await_price: i === 0 ? awaitFlag : false   // 等待行情按套计一次
+          });
+        });
       }
 
       const awaitRows = detail.filter(r => r.await_price);
@@ -770,6 +914,7 @@ module.exports = function(db) {
       const alloc = await computeOutboundAlloc(db);
       const priceMap = await loadPriceMap(db);
       const today = await todayOf(db);
+      const setMap = await loadSetNameMap(db);   // 套装归组用（同一套装的多个编码只算一次价）
 
       const pad = n => String(n).padStart(2, '0');
 
@@ -793,15 +938,27 @@ module.exports = function(db) {
         const device = devItem ? String(devItem.device).trim() : '';
         let sale = 0, hasOut = false, lastDay = '', awaitFlag = false;
 
-        items.forEach(it => {
-          const a = alloc[it.id];
-          if (!a || !(a.out_qty > 0)) return;   // 本单这条没被出库消耗 → 不算
+        // 按套装归组：同「套装名」的多个编码合成一套，只算一次套价（详见文件顶部套装说明）
+        const setGroups = groupItemsBySet(items, setMap);
+        setGroups.forEach(g => {
+          const outInfo = g.items.map(it => ({ it, a: alloc[it.id] }));
+          const anyOut = outInfo.find(x => x.a && x.a.out_qty > 0);
+          if (!anyOut) return;   // 这一套（或这件商品）没被出库消耗 → 不算
           hasOut = true;
-          if (a.out_date > lastDay) lastDay = a.out_date;
+          if (anyOut.a.out_date > lastDay) lastDay = anyOut.a.out_date;
           // 出库日次日还没到（今天才出库）→ 这一单的收益只是暂计，明天录价后会自动重算
-          if (a.out_date && nextDayOf(a.out_date) > today) awaitFlag = true;
-          const mp = pickMarketPrice(priceMap, it.product_code, a.out_date);
-          if (mp) sale += mp.price * (Number(it.quantity) || 0);
+          if (anyOut.a.out_date && nextDayOf(anyOut.a.out_date) > today) awaitFlag = true;
+
+          if (g.isSet) {
+            // 套装：套数 = 组内第一个编码的数量合计，行情取第一个编码的价 → 一套只算一次
+            const units = setUnitsOf(g);
+            const mp = pickMarketPrice(priceMap, g.items[0].product_code, anyOut.a.out_date);
+            if (mp) sale += mp.price * units;
+          } else {
+            const it = g.items[0];
+            const mp = pickMarketPrice(priceMap, it.product_code, anyOut.a.out_date);
+            if (mp) sale += mp.price * (Number(it.quantity) || 0);
+          }
         });
 
         if (!hasOut) { pendingInvest += cost; pendingCount++; return; }
@@ -972,24 +1129,63 @@ module.exports = function(db) {
       // ⚠️ 取价口径必须与「单利润 / 盈亏总览」完全一致（2026-09-15 对齐）：
       //    出库次日(D+1)优先，次日没录 → 出库日当天/之前最近一天，不往后找
       //    这里不能写成 date <= 出库日，否则出库当天录了次日价时对不上
+      // ⚠️ 套装（2026-09-23）：同一天出的同一套装，只在「代表条目」上记一次 套价 × 套数，
+      //    其余组成商品标 set_member 且销售额记 0 —— 否则一套会被算成 N 倍
       const priceMap = await loadPriceMap(db);
+      const setMap = await loadSetNameMap(db);
+
+      const setKeyOf = ob => (setMap[ob.product_code] || '') + '||' + (ob.out_day || '');
+      const setLeaderId = {};   // 组 key → 代表条目 id（取最小 id，与入库代表口径一致）
+      const setUnits = {};      // 组 key → 套数（代表编码在这批里的出库数量合计）
+      outbound.rows.forEach(ob => {
+        ob.set_name = setMap[ob.product_code] || '';
+        ob.is_set = !!ob.set_name;
+        ob.set_member = false;
+        if (!ob.is_set || !ob.out_day) return;
+        const k = setKeyOf(ob);
+        if (setLeaderId[k] === undefined || ob.id < setLeaderId[k]) setLeaderId[k] = ob.id;
+      });
+      Object.keys(setLeaderId).forEach(k => {
+        const leader = outbound.rows.find(x => x.id === setLeaderId[k]);
+        if (!leader) return;
+        setUnits[k] = outbound.rows
+          .filter(x => x.is_set && setKeyOf(x) === k && x.product_code === leader.product_code)
+          .reduce((s, x) => s + (Number(x.quantity) || 0), 0);
+      });
+
       for (const ob of outbound.rows) {
         const outDate = ob.out_day || '';
-        if (outDate) {
-          const mp = pickMarketPrice(priceMap, ob.product_code, outDate);
-          const salePrice = mp ? mp.price : 0;
-          const totalCost = costByOutId[ob.id] || 0;
-          const totalSale = salePrice * Number(ob.quantity || 0);
-          ob.sale_price = Number(totalSale.toFixed(2));   // 整单销售额
-          ob.cost_price = Number(totalCost.toFixed(2));   // 整单成本（FIFO 具体成本）
-          ob.profit = Number((totalSale - totalCost).toFixed(2));
-          ob.price_date = mp ? mp.date : '';              // 行情价实际取自哪一天
-        } else {
+        const totalCost = Number(costByOutId[ob.id] || 0);
+        ob.cost_price = Number(totalCost.toFixed(2));   // 整单成本（FIFO 具体成本）
+
+        if (!outDate) {
           ob.sale_price = 0;
-          ob.cost_price = 0;
           ob.profit = 0;
           ob.price_date = '';
+          continue;
         }
+
+        // 套装里的非代表组成商品：销售额已并入代表条目，这里不重复计价
+        if (ob.is_set && setLeaderId[setKeyOf(ob)] !== ob.id) {
+          ob.set_member = true;
+          ob.set_units = setUnits[setKeyOf(ob)] || 0;
+          ob.sale_price = 0;
+          ob.profit = 0;              // 组成商品不单独看盈亏，免得被显示成"亏损"
+          ob.price_date = '';
+          continue;
+        }
+
+        const mp = pickMarketPrice(priceMap, ob.product_code, outDate);
+        const salePrice = mp ? mp.price : 0;
+        // 套装代表条目：销售额 = 套价 × 套数；普通商品：行情价 × 出库数量
+        const units = ob.is_set
+          ? (setUnits[setKeyOf(ob)] || Number(ob.quantity) || 0)
+          : (Number(ob.quantity) || 0);
+        const totalSale = salePrice * units;
+        ob.sale_price = Number(totalSale.toFixed(2));   // 整单销售额
+        ob.profit = Number((totalSale - totalCost).toFixed(2));
+        ob.price_date = mp ? mp.date : '';              // 行情价实际取自哪一天
+        if (ob.is_set) ob.set_units = units;
       }
 
       res.json({ inbound: inbound.rows, outbound: outbound.rows });
