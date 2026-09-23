@@ -120,8 +120,7 @@ const ProductsModule = {
                         <td style="vertical-align:top;">${codesHtml}</td>
                         <td style="vertical-align:top;">
                           <strong>${namesText}</strong>
-                          <span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;margin-left:4px;" title="套装：整套一个价，算利润时每套只算一次">套装 · ${this._esc(row.set_name)}</span>
-                          <div style="font-size:10px;color:var(--text-light);margin-top:2px;">${row.items.length} 个编码合成一套计价</div>
+                          <span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;margin-left:4px;" title="这 ${row.items.length} 个编码共用同一个名称，算利润时按一整套只算一次">套装 · ${row.items.length} 个编码</span>
                           ${(!type || !specText || !unitText) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}
                         </td>
                         <td style="vertical-align:top;">${specText || '<span style="color:#bbb;">-</span>'}</td>
@@ -131,6 +130,7 @@ const ProductsModule = {
                         <td>${chartsHtml}</td>
                         <td style="white-space:nowrap;vertical-align:top;">
                           <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();ProductsModule.editProduct('${system}','${first.code}','${first.id}')" title="编辑套装里的第一个编码（点上方编码可编辑指定的那个）">编辑</button>
+                          <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation();ProductsModule.addCodeToSet('${system}', ${rowId})" title="再扫一个码加进这一套">＋ 加码</button>
                           <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();ProductsModule.deleteSet('${system}', ${rowId})">删除套装</button>
                           <button class="btn btn-sm btn-success" onclick="event.stopPropagation();ProductsModule.setPriceForSet('${system}', ${rowId})">💰 套装价</button>
                         </td>
@@ -274,20 +274,7 @@ ${rowsHtml}
           <input type="number" id="product-bundle-qty" value="1" min="1" max="999" />
           <div style="font-size:11px;color:var(--text-light);margin-top:4px;">入库 × 套组数量 = 实际库存</div>
         </div>`}
-        <div class="form-group">
-          <label>是否套装</label>
-          <div style="display:flex;gap:8px;align-items:center;">
-            <select id="product-is-set" onchange="ProductsModule._onSetChange('product')" style="flex:0 0 110px;">
-              <option value="0">否</option>
-              <option value="1">是</option>
-            </select>
-            <input type="text" id="product-set-name" placeholder="套装名，如：礼盒A" style="flex:1;display:none;" />
-          </div>
-          <div id="product-set-hint" style="display:none;font-size:11px;color:var(--text-light);margin-top:4px;line-height:1.5;">
-            同一个套装的每个组成商品（不同编码）都填<b>同一个套装名</b>；行情价录的是<b>整套</b>的价格，
-            系统算利润时每套只算一次，不会按每个编码各算一遍。
-          </div>
-        </div>
+        ${this._setBlockHtml('product')}
         <div class="form-actions">
           <button type="submit" class="btn btn-primary btn-lg">保存</button>
           <button type="button" class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
@@ -296,17 +283,109 @@ ${rowsHtml}
     `;
 
     // 加载类型选项
+    this._resetSetCodes('product');
     this._loadTypeOptions(system);
   },
 
-  // 「是否套装」切换：选"是"才显示套装名输入框（新增/编辑共用，prefix 区分两套表单的 id）
+  // 「是否套装」区块（添加/编辑共用）：选"是" → 出现「再扫一个码」输入
+  // ❗不再让用户手填套装名：同一套装的几个编码共用「物品名称」，后端按名称归组
+  _setBlockHtml(prefix, isSet, extraTopHtml) {
+    const shown = isSet ? '' : 'display:none;';
+    return `
+        <div class="form-group">
+          <label>是否套装</label>
+          <select id="${prefix}-is-set" onchange="ProductsModule._onSetChange('${prefix}')" style="max-width:160px;">
+            <option value="0"${isSet ? '' : ' selected'}>否</option>
+            <option value="1"${isSet ? ' selected' : ''}>是</option>
+          </select>
+        </div>
+        <div class="form-group" id="${prefix}-set-wrap" style="${shown}">
+          <label>这个套装的其它编码</label>
+          ${extraTopHtml || ''}
+          <div class="input-with-btn">
+            <input type="text" id="${prefix}-set-code-input" placeholder="再扫一个码，或手动输入" />
+            <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('${prefix}-set-code-input','set-${prefix}')">📷 扫码</button>
+            <button type="button" class="btn btn-sm btn-primary" onclick="ProductsModule.addSetCode('${prefix}')">＋ 加入</button>
+          </div>
+          <div id="${prefix}-set-code-list" style="margin-top:8px;"></div>
+          <div style="font-size:11px;color:var(--text-light);margin-top:6px;line-height:1.6;">
+            一个套装 = <b>同一个商品的多个条码</b>（上面填的是第一个码）。这些编码共用同一个名称/规格/单位/行情/类型，
+            在商品信息表里显示成同一行；算利润时按<b>一整套</b>只算一次。
+          </div>
+        </div>`;
+  },
+
+  // 「是否套装」切换：选"是"才显示多码输入区
   _onSetChange(prefix) {
-    const sel = document.getElementById(prefix === 'edit' ? 'edit-product-is-set' : 'product-is-set');
+    const sel = document.getElementById(prefix + '-is-set');
     const on = sel && sel.value === '1';
-    const nameEl = document.getElementById(prefix === 'edit' ? 'edit-product-set-name' : 'product-set-name');
-    const hintEl = document.getElementById(prefix === 'edit' ? 'edit-product-set-hint' : 'product-set-hint');
-    if (nameEl) nameEl.style.display = on ? '' : 'none';
-    if (hintEl) hintEl.style.display = on ? '' : 'none';
+    const wrap = document.getElementById(prefix + '-set-wrap');
+    if (wrap) wrap.style.display = on ? '' : 'none';
+    if (on) this._renderSetCodeList(prefix);
+  },
+
+  // 表单里已经加进来的「其它编码」（key = 表单前缀 product / edit / setadd）
+  _setCodesOf(prefix) {
+    if (!this._setCodes) this._setCodes = {};
+    if (!this._setCodes[prefix]) this._setCodes[prefix] = [];
+    return this._setCodes[prefix];
+  },
+
+  _resetSetCodes(prefix) { if (!this._setCodes) this._setCodes = {}; this._setCodes[prefix] = []; },
+
+  // 把一个扫码/手输的编码加进当前表单的套装列表
+  addSetCode(prefix) {
+    const input = document.getElementById(prefix + '-set-code-input');
+    if (!input) return;
+    const code = String(input.value || '').trim();
+    if (!code) { showToast('先扫码或输入一个编码'); return; }
+    const mainCode = String((document.getElementById(prefix === 'edit' ? 'edit-product-code' : 'product-code') || {}).value || '').trim();
+    const list = this._setCodesOf(prefix);
+    if (code === mainCode) { showToast('这就是第一个编码，不用重复加'); return; }
+    if (list.indexOf(code) >= 0) { showToast('这个编码已经加过了'); return; }
+    list.push(code);
+    input.value = '';
+    this._renderSetCodeList(prefix);
+    showToast('已加入：' + code);
+  },
+
+  removeSetCode(prefix, code) {
+    const list = this._setCodesOf(prefix);
+    const i = list.indexOf(code);
+    if (i >= 0) list.splice(i, 1);
+    this._renderSetCodeList(prefix);
+  },
+
+  _renderSetCodeList(prefix) {
+    const box = document.getElementById(prefix + '-set-code-list');
+    if (!box) return;
+    const list = this._setCodesOf(prefix);
+    if (!list.length) {
+      box.innerHTML = '<div style="font-size:12px;color:var(--text-light);">还没加其它编码（只有上面那一个码）</div>';
+      return;
+    }
+    box.innerHTML = list.map(c => `
+      <span style="display:inline-flex;align-items:center;gap:6px;background:#ede7f6;color:#5e35b1;
+        padding:3px 8px;border-radius:12px;font-size:12px;margin:0 6px 6px 0;">
+        ${this._esc(c)}
+        <span style="cursor:pointer;font-weight:700;" title="移除" onclick="ProductsModule.removeSetCode('${prefix}','${this._esc(c)}')">×</span>
+      </span>`).join('') +
+      `<div style="font-size:11px;color:var(--text-light);margin-top:2px;">这一套共 ${list.length + 1} 个编码，保存后显示成同一行</div>`;
+  },
+
+  // 把一个编码并入套装：已存在的商品只挂到这一套（不动它自己的信息），不存在才新建
+  async _joinSet(code, setName, fields) {
+    const exist = (this._allProducts || []).find(p => String(p.code) === String(code));
+    if (exist) {
+      await API.put(`/api/main/products/id/${exist.id}`, {
+        code: exist.code, name: exist.name, spec: exist.spec, unit: exist.unit,
+        market_price: exist.market_price, type: exist.type, bundle_qty: exist.bundle_qty,
+        is_set: true, set_name: setName
+      });
+      return 'joined';
+    }
+    await API.post('/api/main/products', Object.assign({}, fields, { code, is_set: true, set_name: setName }));
+    return 'created';
   },
 
   // HTML 转义：套装名等用户输入要拼进 innerHTML，必须转义再拼
@@ -438,6 +517,65 @@ ${rowsHtml}
     }
   },
 
+  // 给已有套装「再扫一个码」：已存在的编码并进来，新编码按本套装的信息建
+  addCodeToSet(system, rowId) {
+    const ref = this._setRef(rowId);
+    if (!ref) return;
+    this._setAddCtx = { system, rowId };
+    const lead = ref.members[0];
+    showModal(`给套装「${lead.name}」再加一个编码`);
+    const body = document.getElementById('modal-body');
+    body.innerHTML = `
+      <div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.6;">
+          这一套现在有 ${ref.members.length} 个编码：<b>${ref.members.map(m => this._esc(m.code)).join('、')}</b><br/>
+          新加的编码会显示在同一行，和它们共用同一个名称，算利润时仍按<b>一整套只算一次</b>。
+        </div>
+        <div class="form-group">
+          <label>要加入的编码</label>
+          <div class="input-with-btn">
+            <input type="text" id="setadd-code" placeholder="扫码或手动输入编码" autofocus />
+            <button type="button" class="btn btn-sm btn-secondary" onclick="triggerBarcodeScan('setadd-code','setadd')">📷 扫码</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text-light);line-height:1.6;">
+          · 系统中已存在的编码 → 直接并入这一套（不动它原有的规格等信息）<br/>
+          · 全新的编码 → 按本套装的名称/规格/单位/行情/类型新建一条
+        </div>
+        <div class="form-actions" style="margin-top:16px;">
+          <button class="btn btn-primary btn-lg" onclick="ProductsModule.submitAddCodeToSet()">加入</button>
+          <button class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
+        </div>
+      </div>
+    `;
+  },
+
+  async submitAddCodeToSet() {
+    const c = this._setAddCtx;
+    if (!c) return;
+    const ref = this._setRef(c.rowId);
+    if (!ref) return;
+    const input = document.getElementById('setadd-code');
+    const code = String((input && input.value) || '').trim();
+    if (!code) { showToast('先扫码或输入一个编码'); return; }
+    if (ref.members.some(m => String(m.code) === code)) { showToast('这个编码已经在这一套里了'); return; }
+    const lead = ref.members[0];
+    const setName = String(lead.set_name || lead.name).trim();
+    try {
+      // 重新拉一次商品表，确保能判断这个编码是否已存在
+      try { this._allProducts = await API.get('/api/main/products'); } catch (e) { /* 用缓存兜底 */ }
+      const r = await this._joinSet(code, setName, {
+        name: lead.name, spec: lead.spec, unit: lead.unit,
+        market_price: lead.market_price, type: lead.type, bundle_qty: lead.bundle_qty
+      });
+      showToast(r === 'joined' ? `${code} 已并入这一套` : `已新增编码 ${code} 并加入这一套`);
+      closeModal();
+      await this.loadProducts(c.system);
+    } catch (e) {
+      showToast('加入失败: ' + (e.message || ''));
+    }
+  },
+
   async _loadTypeOptions(system) {
     const select = document.getElementById('product-type');
     if (!select) return;
@@ -464,25 +602,31 @@ ${rowsHtml}
     const marketPrice = document.getElementById('product-market-price').value;
     const type = system === 'main' ? document.getElementById('product-type').value : '抖音刷券';
     const bundleQty = type === '抖音刷券' ? parseInt(document.getElementById('product-bundle-qty')?.value) || 1 : 1;
-    // 是否套装：同一套装的组成商品（不同编码）填同一个套装名，系统据此按"套"计价
+    // 是否套装：同一个商品的多个条码共用「名称」，后端按名称归组 → 按"套"计价
     const isSet = (document.getElementById('product-is-set')?.value === '1');
-    const setName = isSet ? (document.getElementById('product-set-name')?.value || '').trim() : '';
+    const extraCodes = isSet ? this._setCodesOf('product').slice() : [];
 
     if (!code || !name) {
       showToast('请填写物品编码和名称');
       return;
     }
-    if (isSet && !setName) {
-      showToast('请填写套装名（同一个套装的商品都填同一个名字）');
-      return;
-    }
 
     try {
-      const body = { code, name, spec, unit, market_price: marketPrice, type, is_set: isSet, set_name: setName };
+      // 套装不再手填套装名：归组键就是商品名称（详见文件顶部套装说明）
+      const body = { code, name, spec, unit, market_price: marketPrice, type, is_set: isSet };
+      if (isSet) body.set_name = name;
       if (type === '抖音刷券') body.bundle_qty = bundleQty;
       // 统一用主系统 API 存储（按类型区分）
-      const result = await API.post('/api/main/products', body);
-      showToast('添加成功！');
+      await API.post('/api/main/products', body);
+
+      // 套装：把「其它编码」一起建出来 / 并入这一套
+      if (isSet) {
+        for (const c of extraCodes) {
+          await this._joinSet(c, name, { name, spec, unit, market_price: marketPrice, type, bundle_qty: bundleQty });
+        }
+      }
+      this._resetSetCodes('product');
+      showToast(isSet && extraCodes.length ? `添加成功：这一套共 ${extraCodes.length + 1} 个编码` : '添加成功！');
 
       closeModal();
       await this.loadProducts(system);
@@ -788,6 +932,17 @@ ${rowsHtml}
       const systemLabel = system === 'main' ? '主系统' : '抖音刷券';
       showModal(`编辑物品 - ${systemLabel}`);
 
+      // 已经是套装的：把同一套里已有的其它编码列出来（只展示，加新码用下面的输入框）
+      const setName0 = String(product.set_name || '').trim();
+      const siblings = setName0
+        ? all.filter(p => String(p.set_name || '').trim() === setName0 && String(p.id) !== String(product.id))
+        : [];
+      const siblingsHint = siblings.length
+        ? `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;line-height:1.6;">
+             这一套现在的编码：<b>${this._esc(product.code)}</b>（本商品）${siblings.map(s => '、' + this._esc(s.code)).join('')}
+           </div>`
+        : '';
+
       const body = document.getElementById('modal-body');
       body.innerHTML = `
         <form id="edit-product-form" class="form-grid" onsubmit="ProductsModule.submitEdit('${system}','${code}','${product.id}');return false;">
@@ -831,25 +986,17 @@ ${rowsHtml}
             <label>套组数量</label>
             <input type="number" id="edit-bundle-qty" value="${product.bundle_qty || 1}" min="1" max="999" />
           </div>` : ''}
-          <div class="form-group">
-            <label>是否套装</label>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <select id="edit-product-is-set" onchange="ProductsModule._onSetChange('edit')" style="flex:0 0 110px;">
-                <option value="0" ${product.set_name ? '' : 'selected'}>否</option>
-                <option value="1" ${product.set_name ? 'selected' : ''}>是</option>
-              </select>
-              <input type="text" id="edit-product-set-name" value="${this._esc(product.set_name || '')}" placeholder="套装名，如：礼盒A" style="flex:1;${product.set_name ? '' : 'display:none;'}" />
-            </div>
-            <div id="edit-product-set-hint" style="font-size:11px;color:var(--text-light);margin-top:4px;line-height:1.5;${product.set_name ? '' : 'display:none;'}">
-              同一个套装的每个组成商品（不同编码）都填<b>同一个套装名</b>；行情价录的是<b>整套</b>的价格，算利润时每套只算一次。
-            </div>
-          </div>
+          ${this._setBlockHtml('edit', !!String(product.set_name || '').trim(), siblingsHint)}
           <div class="form-actions">
             <button type="submit" class="btn btn-primary btn-lg">保存修改</button>
             <button type="button" class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
           </div>
         </form>
       `;
+
+      // 表单里的「其它编码」只表示"这次要加进来的"，已存在的同套编码只做展示
+      this._resetSetCodes('edit');
+      this._renderSetCodeList('edit');
 
       const select = document.getElementById('edit-product-type');
       if (select) {
@@ -870,16 +1017,16 @@ ${rowsHtml}
     const typeEl = document.getElementById('edit-product-type');
     const type = typeEl ? typeEl.value : (system === 'douyin' ? '抖音刷券' : '');
     const bundleQty = parseInt(document.getElementById('edit-bundle-qty')?.value) || undefined;
-    // 是否套装（同一套装的组成商品填同一个套装名，系统据此按"套"计价）
+    // 是否套装（归组键 = 商品名称，用户不填套装名）
     const isSet = (document.getElementById('edit-product-is-set')?.value === '1');
-    const setName = isSet ? (document.getElementById('edit-product-set-name')?.value || '').trim() : '';
+    const setName = isSet ? name : '';
+    const extraCodes = isSet ? this._setCodesOf('edit').slice() : [];
     // 编码（可修改，后端会级联同步历史记录）
     const codeInput = document.getElementById('edit-product-code');
     const newCode = codeInput ? codeInput.value.trim() : code;
 
     if (!name) { showToast('请填写物品名称'); return; }
     if (!newCode) { showToast('请填写物品编码'); return; }
-    if (isSet && !setName) { showToast('请填写套装名（同一个套装的商品都填同一个名字）'); return; }
 
     try {
       const body = { code: newCode, name, spec, unit, market_price: marketPrice, type, is_set: isSet, set_name: setName };
@@ -887,7 +1034,12 @@ ${rowsHtml}
       // 有 ID 则用 ID 更新（精确匹配），否则用 code+type
       const url = id ? `/api/main/products/id/${encodeURIComponent(id)}` : `/api/main/products/${encodeURIComponent(code)}?type=${encodeURIComponent(type)}`;
       await API.put(url, body);
-      showToast(newCode !== code ? `修改成功，已同步更新历史记录` : '修改成功');
+      // 套装：把新加的编码并进这一套（名称跟着本商品走，保证归到同一组）
+      for (const c of extraCodes) {
+        await this._joinSet(c, name, { name, spec, unit, market_price: marketPrice, type, bundle_qty: bundleQty });
+      }
+      this._resetSetCodes('edit');
+      showToast(newCode !== code ? `修改成功，已同步更新历史记录` : (extraCodes.length ? `修改成功，已加入 ${extraCodes.length} 个编码` : '修改成功'));
       closeModal();
       await this.loadProducts(system);
     } catch (e) {
@@ -1035,7 +1187,11 @@ ${rowsHtml}
 };
 
 // 条码扫描触发函数
-function triggerBarcodeScan(inputId) {
+// afterToken（可选）：扫完后自动执行的动作，省掉再点一次按钮
+//   'set-product' → 加入「添加物品」表单的套装编码列表
+//   'set-edit'    → 加入「编辑物品」表单的套装编码列表
+//   'setadd'      → 直接提交「给套装加一个码」弹窗
+function triggerBarcodeScan(inputId, afterToken) {
   const input = document.getElementById(inputId);
   if (!input) return;
 
@@ -1062,6 +1218,15 @@ function triggerBarcodeScan(inputId) {
     input.value = code;
     scanPanel.remove();
     BarcodeScanner.stopScan();
+    // 套装多码输入：扫完直接加进去，不用再点「＋ 加入」
+    const actions = {
+      'set-product': () => ProductsModule.addSetCode('product'),
+      'set-edit': () => ProductsModule.addSetCode('edit'),
+      'setadd': () => ProductsModule.submitAddCodeToSet(),
+    };
+    if (afterToken && actions[afterToken]) {
+      try { actions[afterToken](); return; } catch (e) { console.error('扫码后续动作失败:', e); }
+    }
     showToast('已填入编码: ' + code);
   });
 }

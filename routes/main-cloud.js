@@ -93,9 +93,12 @@ function pickMarketPrice(priceMap, code, outDay) {
 // ============================================================================
 // 套装（2026-09-23）
 // ----------------------------------------------------------------------------
-// 场景：一个套装由多个「不同编码」的商品组成（如 A、B 两个编码），它们在商品表里
-//       各自一条记录，但都填同一个「套装名」→ 视为同一套；名称/规格/单位/行情/类型相同。
+// 场景：一个套装由多个「不同编码」的商品组成（如 A、B 两个条码），它们在商品表里
+//       各自一条记录，但属于同一套；名称/规格/单位/行情/类型相同。
 //       入库时这些编码会被分别扫到，同一张单里因此出现多条记录（这是正常的，别去重）。
+// 归组键：set_name 字段，**值 = 商品名称**（2026-09-23 晚起：用户不再手填套装名，
+//       在「添加物品」里选"是套装"后只要多扫几个码；改名称时整套一起改名，
+//       `syncSetNameRename`）。前端商品列表也按同名套装合并成一行显示。
 // 口径：一整套只对应一个行情价（每个组成商品都录同一个价，系统只取一次），
 //       套数 = 组内「第一个编码」的数量合计，销售额 = 套价 × 套数。
 //       ❌ 不能按「每个编码各自的行情价 × 数量」相加 —— 那样一套会被算成 N 倍。
@@ -139,6 +142,15 @@ function setUnitsOf(group) {
   return group.items
     .filter(x => x.product_code === firstCode)
     .reduce((s, x) => s + (Number(x.quantity) || 0), 0);
+}
+
+// 套装归组键 = 商品名称。改了名称 → 把这一套原来的成员一起改名，
+// 否则同一套会被拆成两组（用户不手填套装名，详见文件顶部套装说明）
+async function syncSetNameRename(db, id, newSetName) {
+  const r = await db.query('SELECT set_name FROM main_products WHERE id = ?', [id]);
+  const old = r.rows[0] ? String(r.rows[0].set_name || '').trim() : '';
+  if (!old || old === newSetName) return;
+  await db.query('UPDATE main_products SET set_name = ? WHERE set_name = ?', [newSetName, old]);
 }
 
 // ============================================================================
@@ -256,12 +268,10 @@ module.exports = function(db) {
       const { code, name, spec, unit, market_price, type, gift_of, bundle_qty, is_set, set_name } = req.body;
       if (!code || !name) return res.status(400).json({ error: '编码和名称为必填项' });
 
-      // 勾了「套装」就必须填套装名：同一套装的各组成商品靠这个名归组（详见文件顶部套装说明）
+      // 套装：不再手填套装名，归组键 = 商品名称（同一套装的几个编码名称相同）
+      //   → 用户在「添加物品」里选"是套装"后只需多扫几个码，不用再想名字
       const setFlag = is_set === true || is_set === 'true' || is_set === 1 || is_set === '1';
-      const setName = setFlag ? String(set_name || '').trim() : '';
-      if (setFlag && !setName) {
-        return res.status(400).json({ error: '勾选套装后必须填写套装名，同一套装的每个商品都填同一个名字' });
-      }
+      const setName = setFlag ? String(name).trim() : '';
 
       // 不做重复检查，同一个编码可在不同类型和不同套餐中重复出现
       const result = await db.query(
@@ -289,10 +299,11 @@ module.exports = function(db) {
       if (gift_of !== undefined) { sets.push('gift_of=?'); params.push(gift_of || null); }
 
       // 套装字段：同样「传了才更新」—— 否则旧缓存的页面保存时会把套装标记抹掉
+      // 归组键 = 商品名称；改了名称就把整套一起改，别让同一套被拆成两组
       if (is_set !== undefined) {
         const setFlag = is_set === true || is_set === 'true' || is_set === 1 || is_set === '1';
-        const setName = setFlag ? String(set_name || '').trim() : '';
-        if (setFlag && !setName) return res.status(400).json({ error: '勾选套装后必须填写套装名' });
+        const setName = setFlag ? String(name).trim() : '';
+        if (setFlag) await syncSetNameRename(db, existing.rows[0].id, setName);
         sets.push('is_set=?'); params.push(setFlag);
         sets.push('set_name=?'); params.push(setName || null);
       }
@@ -332,10 +343,11 @@ module.exports = function(db) {
       const sets2 = ['code=?', 'name=?', 'spec=?', 'unit=?', 'market_price=?', 'type=?', 'bundle_qty=?', 'updated_at=CURRENT_TIMESTAMP'];
       const params2 = [newCode, name, spec, unit, market_price, type || '', parseInt(bundle_qty) || 1];
       // 套装字段「传了才更新」，避免旧页面保存时抹掉标记
+      // 归组键 = 商品名称；改了名称就把整套一起改，别让同一套被拆成两组
       if (is_set !== undefined) {
         const setFlag = is_set === true || is_set === 'true' || is_set === 1 || is_set === '1';
-        const setName = setFlag ? String(set_name || '').trim() : '';
-        if (setFlag && !setName) return res.status(400).json({ error: '勾选套装后必须填写套装名' });
+        const setName = setFlag ? String(name).trim() : '';
+        if (setFlag) await syncSetNameRename(db, req.params.id, setName);
         sets2.push('is_set=?'); params2.push(setFlag);
         sets2.push('set_name=?'); params2.push(setName || null);
       }
