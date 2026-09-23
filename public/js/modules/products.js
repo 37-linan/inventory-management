@@ -58,17 +58,90 @@ const ProductsModule = {
         groups[type].push(p);
       });
 
+      // 同一个「套装名」的多个编码合并成一行显示（详见文件顶部套装说明）
+      this._rowRefs = {};        // 套装行索引 → 成员信息（按钮回调按索引取，避免把中文/引号拼进 onclick）
+      let rowSeq = 0;
+
       let html = '';
       let groupIndex = 0;
       for (const [type, items] of Object.entries(groups)) {
         const idx = groupIndex++;
         const collapsed = localStorage.getItem('pg-collapse-' + idx) === '1';
-        const totalCount = items.length;
+        const rows = this._buildDisplayRows(items);
+
+        const rowsHtml = rows.map(row => {
+          const first = row.items[0];
+
+          // ---------- 普通商品：一件一行 ----------
+          if (!row.isSet) {
+            const p = first;
+            return `
+                      <tr draggable="true" data-pid="${p.id}" data-pids="${p.id}" onclick="ProductsModule.editProduct('${system}','${p.code}','${p.id}')" style="cursor:grab;">
+                        <td>
+                          <code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:12px;">${p.code}</code>
+                        </td>
+                        <td>
+                          <strong>${p.name}</strong>
+                          ${(!p.type || !p.spec || !p.unit) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}
+                        </td>
+                        <td>${p.spec || '<span style="color:#bbb;">-</span>'}</td>
+                        <td>${p.unit || '<span style="color:#bbb;">-</span>'}</td>
+                        <td>${p.type || '<span style="color:#bbb;">-</span>'}</td>
+                        <td>${p.market_price || '<span style="color:#bbb;">-</span>'}</td>
+                        <td>
+                          <div class="chart-container" id="chart-${system}-${p.code}-${p.id}"></div>
+                        </td>
+                        <td style="white-space:nowrap;">
+                          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();ProductsModule.editProduct('${system}','${p.code}','${p.id}')">编辑</button>
+                          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}','${p.type}','${p.id}')">删除</button>
+                          <button class="btn btn-sm btn-success" onclick="event.stopPropagation();ProductsModule.setPrice('${system}','${p.code}','${p.name}','${p.id}')">💰 价格</button>
+                        </td>
+                      </tr>`;
+          }
+
+          // ---------- 套装：多个编码挤在同一行，共用一个名称，整套一个价 ----------
+          const rowId = rowSeq++;
+          this._rowRefs[rowId] = { system, setName: row.set_name, members: row.items };
+          const codesHtml = row.items.map(p => `
+                        <div style="margin-bottom:2px;">
+                          <code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;" title="点击编辑这个编码" onclick="event.stopPropagation();ProductsModule.editProduct('${system}','${p.code}','${p.id}')">${p.code}</code>
+                        </div>`).join('');
+          const namesText = this._uniqList(row.items.map(p => p.name)).map(v => this._esc(v)).join(' / ');
+          const specText = this._uniqList(row.items.map(p => p.spec)).map(v => this._esc(v)).join(' / ');
+          const unitText = this._uniqList(row.items.map(p => p.unit)).map(v => this._esc(v)).join(' / ');
+          const mpText = this._uniqList(row.items.map(p => p.market_price)).map(v => this._esc(v)).join(' / ');
+          const chartsHtml = row.items.map(p => `
+                        <div style="display:flex;align-items:center;gap:6px;">
+                          <span style="font-size:10px;color:var(--text-light);flex:0 0 auto;">${p.code}</span>
+                          <div class="chart-container" id="chart-${system}-${p.code}-${p.id}" style="flex:1;min-width:0;"></div>
+                        </div>`).join('');
+          return `
+                      <tr draggable="true" data-pid="${first.id}" data-pids="${row.items.map(p => p.id).join(',')}" onclick="ProductsModule.editProduct('${system}','${first.code}','${first.id}')" style="cursor:grab;background:#fbf9fe;">
+                        <td style="vertical-align:top;">${codesHtml}</td>
+                        <td style="vertical-align:top;">
+                          <strong>${namesText}</strong>
+                          <span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;margin-left:4px;" title="套装：整套一个价，算利润时每套只算一次">套装 · ${this._esc(row.set_name)}</span>
+                          <div style="font-size:10px;color:var(--text-light);margin-top:2px;">${row.items.length} 个编码合成一套计价</div>
+                          ${(!type || !specText || !unitText) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}
+                        </td>
+                        <td style="vertical-align:top;">${specText || '<span style="color:#bbb;">-</span>'}</td>
+                        <td style="vertical-align:top;">${unitText || '<span style="color:#bbb;">-</span>'}</td>
+                        <td style="vertical-align:top;">${type || '<span style="color:#bbb;">-</span>'}</td>
+                        <td style="vertical-align:top;">${mpText || '<span style="color:#bbb;">-</span>'}</td>
+                        <td>${chartsHtml}</td>
+                        <td style="white-space:nowrap;vertical-align:top;">
+                          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();ProductsModule.editProduct('${system}','${first.code}','${first.id}')" title="编辑套装里的第一个编码（点上方编码可编辑指定的那个）">编辑</button>
+                          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();ProductsModule.deleteSet('${system}', ${rowId})">删除套装</button>
+                          <button class="btn btn-sm btn-success" onclick="event.stopPropagation();ProductsModule.setPriceForSet('${system}', ${rowId})">💰 套装价</button>
+                        </td>
+                      </tr>`;
+        }).join('');
+
         html += `
           <div class="card">
             <div class="card-header" style="cursor:pointer;user-select:none;" onclick="ProductsModule.toggleGroup(${idx})" title="${collapsed ? '点击展开' : '点击折叠'}">
               <h3 style="color:var(--primary);font-size:14px;">📁 ${type} <span id="group-arrow-${idx}" style="font-size:12px;color:var(--text-light);">${collapsed ? '▸' : '▾'}</span></h3>
-              <span style="font-size:12px;color:var(--text-light);">共 ${items.length} 个产品</span>
+              <span style="font-size:12px;color:var(--text-light);">共 ${rows.length} 项${rows.length !== items.length ? `（${items.length} 个编码）` : ''}</span>
             </div>
             <div class="card-body" style="padding:0;${collapsed ? 'display:none;' : ''}" id="group-body-${idx}">
               <div class="table-wrapper">
@@ -86,31 +159,7 @@ const ProductsModule = {
                     </tr>
                   </thead>
                   <tbody id="group-tbody-${idx}" data-group="${idx}">
-                    ${items.map(p => {
-                      return `
-                      <tr draggable="true" data-pid="${p.id}" onclick="ProductsModule.editProduct('${system}','${p.code}','${p.id}')" style="cursor:grab;">
-                        <td>
-                          <code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:12px;">${p.code}</code>
-                        </td>
-                        <td>
-                          <strong>${p.name}</strong>
-                          ${(p.set_name || '').trim() ? `<span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;margin-left:4px;" title="套装：整套一个价，算利润时每套只算一次">套装 · ${ProductsModule._esc(p.set_name)}</span>` : ''}
-                          ${(!p.type || !p.spec || !p.unit) ? '<span style="color:var(--danger);font-size:10px;">待补充</span>' : ''}
-                        </td>
-                        <td>${p.spec || '<span style="color:#bbb;">-</span>'}</td>
-                        <td>${p.unit || '<span style="color:#bbb;">-</span>'}</td>
-                        <td>${p.type || '<span style="color:#bbb;">-</span>'}</td>
-                        <td>${p.market_price || '<span style="color:#bbb;">-</span>'}</td>
-                        <td>
-                          <div class="chart-container" id="chart-${system}-${p.code}-${p.id}"></div>
-                        </td>
-                        <td style="white-space:nowrap;">
-                          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();ProductsModule.editProduct('${system}','${p.code}','${p.id}')">编辑</button>
-                          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();ProductsModule.deleteProduct('${system}','${p.code}','${p.type}','${p.id}')">删除</button>
-                          <button class="btn btn-sm btn-success" onclick="event.stopPropagation();ProductsModule.setPrice('${system}','${p.code}','${p.name}','${p.id}')">💰 价格</button>
-                        </td>
-                      </tr>`;
-                    }).join('')}
+${rowsHtml}
                   </tbody>
                 </table>
               </div>
@@ -270,6 +319,125 @@ const ProductsModule = {
       .replace(/'/g, '&#39;');
   },
 
+  // ===== 套装：列表里同一套装名的多个编码合成一行 =====
+  // 把某类型下的产品按「套装」合并成显示行：
+  //   套装名非空的多个组成商品 → 合成一行（多个编码同格、共用一个名称）
+  //   普通商品 → 各自一行
+  // 返回 [{ isSet, set_name, items: [产品...] }]
+  // ⚠️ 只影响「怎么显示」，不影响入库/出库/利润计算（那边按编码各存各的）
+  _buildDisplayRows(items) {
+    const rows = [];
+    const pos = {};
+    (items || []).forEach(p => {
+      const sn = String(p.set_name || '').trim();
+      if (!sn) { rows.push({ isSet: false, set_name: '', items: [p] }); return; }
+      const key = 'sn:' + sn;
+      if (pos[key] === undefined) {
+        pos[key] = rows.length;
+        rows.push({ isSet: true, set_name: sn, items: [p] });
+      } else {
+        rows[pos[key]].items.push(p);
+      }
+    });
+    return rows;
+  },
+
+  // 去重（保持顺序、去空值、trim）—— 合成行里规格/单位等取并集显示
+  _uniqList(arr) {
+    const out = [];
+    (arr || []).forEach(v => {
+      const s = String(v == null ? '' : v).trim();
+      if (s && out.indexOf(s) < 0) out.push(s);
+    });
+    return out;
+  },
+
+  // 本地时区的今天（❌ 别用 toISOString，会差 8 小时）
+  _todayStr() {
+    const d = new Date(); const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  },
+
+  // 从行索引取回套装成员（按钮回调用；列表重绘过就失效，提示刷新）
+  _setRef(rowId) {
+    const ref = (this._rowRefs || {})[rowId];
+    if (!ref || !ref.members || !ref.members.length) {
+      showToast('数据已刷新，请再点一次');
+      return null;
+    }
+    return ref;
+  },
+
+  // 删除整个套装（该套装名下的所有编码）
+  async deleteSet(system, rowId) {
+    const ref = this._setRef(rowId);
+    if (!ref) return;
+    const codes = ref.members.map(m => m.code).join('、');
+    if (!confirm(`确认删除套装「${ref.setName}」的全部 ${ref.members.length} 个编码？\n\n${codes}`)) return;
+    try {
+      for (const m of ref.members) {
+        await API.del(`/api/main/products/id/${encodeURIComponent(m.id)}`);
+      }
+      showToast(`已删除套装「${ref.setName}」`);
+      await this.loadProducts(system);
+    } catch (e) {
+      showToast('删除失败: ' + e.message);
+    }
+  },
+
+  // 录入「整套价」：一套只有一个价，同时记到该套装的每个编码上
+  // （利润计算取的是组内第一个编码的行情，全都写上最稳妥）
+  async setPriceForSet(system, rowId) {
+    const ref = this._setRef(rowId);
+    if (!ref) return;
+    const first = ref.members[0];
+    try {
+      const latest = await API.get(`/api/main/price-history/${encodeURIComponent(first.code)}/latest?product_id=${first.id}`);
+      const lastPrice = latest.price || 0;
+      const codeList = ref.members.map(m => m.code).join('、');
+      showModal(`录入套装行情价 - ${ref.setName}`);
+      const body = document.getElementById('modal-body');
+      body.innerHTML = `
+        <div style="text-align:center;">
+          <p style="color:var(--text-secondary);margin-bottom:6px;">今日日期: ${this._todayStr()}</p>
+          <p style="font-size:12px;color:var(--text-light);margin-bottom:16px;line-height:1.6;">
+            这是<b>一整套</b>的价格，会同时记到该套装的每个编码上（${this._esc(codeList)}）。<br/>
+            算利润时每套只算一次，不会按每个编码各算一遍。
+          </p>
+          <div class="form-group" style="max-width:300px;margin:0 auto;">
+            <label>今日整套价格 (上次价格: ¥${lastPrice})</label>
+            <input type="number" id="price-input" step="0.01" value="${lastPrice}" style="font-size:24px;padding:12px;text-align:center;" autofocus />
+          </div>
+          <div style="display:flex;gap:10px;justify-content:center;margin-top:16px;">
+            <button class="btn btn-primary btn-lg" onclick="ProductsModule.submitSetPrice('${system}', ${rowId})">确认提交</button>
+            <button class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
+          </div>
+        </div>
+      `;
+    } catch (e) {
+      showToast('获取价格失败');
+    }
+  },
+
+  async submitSetPrice(system, rowId) {
+    const ref = this._setRef(rowId);
+    if (!ref) return;
+    const price = parseFloat(document.getElementById('price-input').value) || 0;
+    const date = this._todayStr();
+    try {
+      for (const m of ref.members) {
+        await API.post('/api/main/price-history', {
+          product_code: m.code, price, product_id: parseInt(m.id), date
+        });
+      }
+      showToast(`套装价已更新（${ref.members.length} 个编码）`);
+      closeModal();
+      await this.loadProducts(system);
+    } catch (e) {
+      showToast('提交失败: ' + e.message);
+    }
+  },
+
   async _loadTypeOptions(system) {
     const select = document.getElementById('product-type');
     if (!select) return;
@@ -426,10 +594,15 @@ const ProductsModule = {
         } else {
           target.before(dragRow);
         }
-        // 收集新顺序并保存
-        const orderedIds = Array.from(tbody.querySelectorAll('tr'))
-          .map(r => parseInt(r.dataset.pid))
-          .filter(id => !isNaN(id));
+        // 收集新顺序并保存（套装行带多个编码 → data-pids，普通行只有一个）
+        const orderedIds = [];
+        Array.from(tbody.querySelectorAll('tr')).forEach(r => {
+          const raw = r.dataset.pids || r.dataset.pid || '';
+          String(raw).split(',').forEach(s => {
+            const n = parseInt(s, 10);
+            if (!isNaN(n)) orderedIds.push(n);
+          });
+        });
         this._saveOrder(orderedIds, system);
       }
       dragRow = null;
