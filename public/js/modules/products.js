@@ -101,7 +101,8 @@ const ProductsModule = {
 
           // ---------- 套装：多个编码挤在同一行，共用一个名称，整套一个价 ----------
           const rowId = rowSeq++;
-          this._rowRefs[rowId] = { system, setName: row.set_name, members: row.items };
+          const setId = `chart-${system}-set-${rowId}`;
+          this._rowRefs[rowId] = { system, setName: row.set_name, members: row.items, chartId: setId };
           const codesHtml = row.items.map(p => `
                         <div style="margin-bottom:2px;">
                           <code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;" title="点击编辑这个编码" onclick="event.stopPropagation();ProductsModule.editProduct('${system}','${p.code}','${p.id}')">${p.code}</code>
@@ -110,11 +111,12 @@ const ProductsModule = {
           const specText = this._uniqList(row.items.map(p => p.spec)).map(v => this._esc(v)).join(' / ');
           const unitText = this._uniqList(row.items.map(p => p.unit)).map(v => this._esc(v)).join(' / ');
           const mpText = this._uniqList(row.items.map(p => p.market_price)).map(v => this._esc(v)).join(' / ');
-          const chartsHtml = row.items.map(p => `
+          // 整套只有一个行情价 → 整行只画一个图，不按编码分开出现行情图
+          const chartsHtml = `
                         <div style="display:flex;align-items:center;gap:6px;">
-                          <span style="font-size:10px;color:var(--text-light);flex:0 0 auto;">${p.code}</span>
-                          <div class="chart-container" id="chart-${system}-${p.code}-${p.id}" style="flex:1;min-width:0;"></div>
-                        </div>`).join('');
+                          <span style="font-size:10px;color:var(--text-light);flex:0 0 auto;">整套</span>
+                          <div class="chart-container" id="${setId}" style="flex:1;min-width:0;"></div>
+                        </div>`;
           return `
                       <tr draggable="true" data-pid="${first.id}" data-pids="${row.items.map(p => p.id).join(',')}" onclick="ProductsModule.editProduct('${system}','${first.code}','${first.id}')" style="cursor:grab;background:#fbf9fe;">
                         <td style="vertical-align:top;">${codesHtml}</td>
@@ -175,8 +177,11 @@ ${rowsHtml}
         this._enableRowDrag(tbody, system);
       });
 
-      // 渲染每个产品的波形图
+      // 渲染每个产品的波形图（套装成员不再单独画，整行只画一个「整套」图）
+      const memberIds = new Set();
+      Object.values(this._rowRefs || {}).forEach(ref => (ref.members || []).forEach(m => memberIds.add(String(m.id))));
       for (const p of filtered) {
+        if (memberIds.has(String(p.id))) continue;
         const chartContainer = document.getElementById(`chart-${system}-${p.code}-${p.id}`);
         if (chartContainer) {
           try {
@@ -191,6 +196,23 @@ ${rowsHtml}
             console.error('图表渲染失败:', e);
             chartContainer.innerHTML = '<div style="color:var(--text-light);font-size:11px;text-align:center;padding:8px;">图表加载失败</div>';
           }
+        }
+      }
+
+      // 套装行：整行只画一个「整套」行情图（用户只填一套价，不必按编码分开出现）
+      for (const [rowId, ref] of Object.entries(this._rowRefs || {})) {
+        const el = document.getElementById(ref.chartId);
+        if (!el) continue;
+        try {
+          const svg = await PriceChart.renderSet(ref.chartId, ref.members);
+          el.innerHTML = `
+              <div onclick="ProductsModule.showSetChart('${ref.system}', ${rowId})" style="cursor:pointer;" title="点击放大查看整套行情">
+                ${svg || '<div style="color:var(--text-light);font-size:11px;padding:8px;">-</div>'}
+              </div>
+            `;
+        } catch (e) {
+          console.error('套装行情图渲染失败:', e);
+          el.innerHTML = '<div style="color:var(--text-light);font-size:11px;text-align:center;padding:8px;">图表加载失败</div>';
         }
       }
     } catch (e) {
@@ -462,6 +484,13 @@ ${rowsHtml}
       return null;
     }
     return ref;
+  },
+
+  // 点击套装行的行情图 → 放大看「整套」走势（多个编码合并成一条线）
+  showSetChart(system, rowId) {
+    const ref = this._setRef(rowId);
+    if (!ref) return;
+    PriceChart.showLargeSet(system, ref.members);
   },
 
   // 删除整个套装（该套装名下的所有编码）
