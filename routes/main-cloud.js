@@ -96,9 +96,11 @@ function pickMarketPrice(priceMap, code, outDay) {
 // 场景：一个套装由多个「不同编码」的商品组成（如 A、B 两个条码），它们在商品表里
 //       各自一条记录，但属于同一套；名称/规格/单位/行情/类型相同。
 //       入库时这些编码会被分别扫到，同一张单里因此出现多条记录（这是正常的，别去重）。
-// 归组键：set_name 字段，**值 = 商品名称**（2026-09-23 晚起：用户不再手填套装名，
-//       在「添加物品」里选"是套装"后只要多扫几个码；改名称时整套一起改名，
-//       `syncSetNameRename`）。前端商品列表也按同名套装合并成一行显示。
+// 归组键：**商品名称**（2026-09-23 晚起用户不再手填套装名；2026-09-24 起一律按名称归组，
+//       由 `setKeyOfProduct` 统一计算 —— ❗不再直接读 set_name 字段，那个字段只是名称的副本，
+//       历史数据里可能残留手打错别字（Whoo水姸/Whoo水妍），按它归组会把同一套拆成两行、
+//       利润还会算成两倍。改名称时整套一起改名：`syncSetMembersRename`）。
+//       前端商品列表也按同名套装合并成一行显示。
 // 口径：一整套只对应一个行情价（每个组成商品都录同一个价，系统只取一次），
 //       套数 = 组内「第一个编码」的数量合计，销售额 = 套价 × 套数。
 //       ❌ 不能按「每个编码各自的行情价 × 数量」相加 —— 那样一套会被算成 N 倍。
@@ -109,16 +111,36 @@ function ensureSetColumns(db) {
   if (!setColsReady) {
     setColsReady = db.query("ALTER TABLE main_products ADD COLUMN IF NOT EXISTS is_set BOOLEAN NOT NULL DEFAULT FALSE")
       .then(() => db.query("ALTER TABLE main_products ADD COLUMN IF NOT EXISTS set_name VARCHAR(100) DEFAULT NULL"))
+      // 归一化历史数据：set_name 只是「归组键的副本」，永远 = 商品名称。
+      // ❗踩过的坑（2026-09-24）：早期让用户手填套装名，留下了错别字（Whoo水姸 / Whoo水妍 差一字），
+      //   只要归组还读 set_name，同一套就会被拆成两行、利润还会算成两倍 → 这里一次性抹平
+      .then(() => db.query(
+        "UPDATE main_products SET set_name = btrim(coalesce(name,'')) " +
+        "WHERE coalesce(set_name,'') <> btrim(coalesce(name,'')) " +
+        "AND (is_set = true OR (set_name IS NOT NULL AND set_name <> ''))"
+      ))
       .catch(e => { setColsReady = null; throw e; });   // 失败允许下次重试
   }
   return setColsReady;
 }
 
-// { code: set_name }，同 code 多条取最后一条（与 /order-profit 里 nameMap 口径一致）
+// 套装归组键 = **商品名称**（用户不手填套装名，见文件顶部说明）
+// ❗一律不信任 set_name 字段本身：只要标记了套装就按名称归组，
+//   这样即使库里残留历史错别字，同一套也不会被拆开（利润更不会重复计）
+function setKeyOfProduct(p) {
+  if (!p) return '';
+  const flagged = p.is_set === true || p.is_set === 'true' || p.is_set === 't' || p.is_set === 1 || p.is_set === '1';
+  const nm = String(p.name || '').trim();
+  const sn = String(p.set_name || '').trim();
+  if (!flagged && !sn) return '';
+  return nm || sn;
+}
+
+// { code: 归组键(商品名称) }，同 code 多条取最后一条（与 /order-profit 里 nameMap 口径一致）
 async function loadSetNameMap(db) {
-  const r = await db.query("SELECT code, set_name FROM main_products WHERE set_name IS NOT NULL AND set_name <> '' ORDER BY id ASC");
+  const r = await db.query('SELECT code, name, is_set, set_name FROM main_products ORDER BY id ASC');
   const map = {};
-  r.rows.forEach(x => { map[x.code] = String(x.set_name).trim(); });
+  r.rows.forEach(x => { const k = setKeyOfProduct(x); if (k) map[x.code] = k; });
   return map;
 }
 
@@ -144,13 +166,24 @@ function setUnitsOf(group) {
     .reduce((s, x) => s + (Number(x.quantity) || 0), 0);
 }
 
-// 套装归组键 = 商品名称。改了名称 → 把这一套原来的成员一起改名，
-// 否则同一套会被拆成两组（用户不手填套装名，详见文件顶部套装说明）
-async function syncSetNameRename(db, id, newSetName) {
-  const r = await db.query('SELECT set_name FROM main_products WHERE id = ?', [id]);
-  const old = r.rows[0] ? String(r.rows[0].set_name || '').trim() : '';
-  if (!old || old === newSetName) return;
-  await db.query('UPDATE main_products SET set_name = ? WHERE set_name = ?', [newSetName, old]);
+// 改了套装里任一商品的名称 → 把这一套**原来的成员一起改名**。
+// 名称就是归组键，不一起改的话同一套会被拆成两组（详见文件顶部套装说明）。
+// ❗name 必须跟着改：以前只改写 set_name 就够了，现在归组读的是 name
+// ❗`sync_rename: false` 时不做（「加码」把某个已有编码并进来时只改它自己，
+//   否则会把它原先同名的那批商品一起拖进这一套）
+async function syncSetMembersRename(db, id, newName, oldHint) {
+  const nm = String(newName || '').trim();
+  if (!nm) return;
+  const cur = await db.query('SELECT name, is_set, set_name FROM main_products WHERE id = ?', [id]);
+  const row = cur.rows[0];
+  if (!row) return;
+  const oldKey = setKeyOfProduct(row) || String(oldHint || '').trim() || String(row.name || '').trim();
+  if (!oldKey || oldKey === nm) return;
+  await db.query(
+    `UPDATE main_products SET name = ?, set_name = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id <> ? AND (btrim(coalesce(name,'')) = ? OR btrim(coalesce(set_name,'')) = ?)`,
+    [nm, nm, id, oldKey, oldKey]
+  );
 }
 
 // ============================================================================
@@ -288,7 +321,7 @@ module.exports = function(db) {
   router.put('/products/:code', async (req, res) => {
     try {
       await ensureSetColumns(db);
-      const { name, spec, unit, market_price, type, gift_of, bundle_qty, is_set, set_name } = req.body;
+      const { name, spec, unit, market_price, type, gift_of, bundle_qty, is_set, set_name, sync_rename } = req.body;
       const existing = await db.query('SELECT id FROM main_products WHERE code = ?', [req.params.code]);
       if (!existing.rows[0]) return res.status(404).json({ error: '产品不存在' });
 
@@ -303,7 +336,7 @@ module.exports = function(db) {
       if (is_set !== undefined) {
         const setFlag = is_set === true || is_set === 'true' || is_set === 1 || is_set === '1';
         const setName = setFlag ? String(name).trim() : '';
-        if (setFlag) await syncSetNameRename(db, existing.rows[0].id, setName);
+        if (setFlag && sync_rename !== false) await syncSetMembersRename(db, existing.rows[0].id, setName);
         sets.push('is_set=?'); params.push(setFlag);
         sets.push('set_name=?'); params.push(setName || null);
       }
@@ -321,7 +354,7 @@ module.exports = function(db) {
   router.put('/products/id/:id', async (req, res) => {
     try {
       await ensureSetColumns(db);
-      const { name, spec, unit, market_price, type, bundle_qty, code, is_set, set_name } = req.body;
+      const { name, spec, unit, market_price, type, bundle_qty, code, is_set, set_name, sync_rename } = req.body;
       // 当前产品编码
       const cur = await db.query('SELECT code FROM main_products WHERE id = ?', [req.params.id]);
       if (!cur.rows[0]) return res.status(404).json({ error: '产品不存在' });
@@ -347,7 +380,7 @@ module.exports = function(db) {
       if (is_set !== undefined) {
         const setFlag = is_set === true || is_set === 'true' || is_set === 1 || is_set === '1';
         const setName = setFlag ? String(name).trim() : '';
-        if (setFlag) await syncSetNameRename(db, req.params.id, setName);
+        if (setFlag && sync_rename !== false) await syncSetMembersRename(db, req.params.id, setName);
         sets2.push('is_set=?'); params2.push(setFlag);
         sets2.push('set_name=?'); params2.push(setName || null);
       }
@@ -618,9 +651,10 @@ module.exports = function(db) {
 
       // 套装（2026-09-23）：一组商品的库存各自独立记，但"能组成几套"取决于最缺的那个
       // → 可成套数 = 同套装名下各编码库存的最小值；并统一把 is_set / set_name 归一化
+      // ❗归组键一律取「商品名称」（setKeyOfProduct），不直接读 set_name 字段（可能残留历史错别字）
       const setCodes = {};
       inventory.forEach(p => {
-        const sn = (p.set_name || '').trim();
+        const sn = setKeyOfProduct(p);
         if (!sn) return;
         (setCodes[sn] || (setCodes[sn] = new Set())).add(p.code);
       });
@@ -629,14 +663,14 @@ module.exports = function(db) {
         let min = Infinity;
         setCodes[sn].forEach(c => {
           const sum = inventory
-            .filter(x => x.code === c && (x.set_name || '').trim() === sn)
+            .filter(x => x.code === c && setKeyOfProduct(x) === sn)
             .reduce((s, x) => s + (Number(x.stock) || 0), 0);
           min = Math.min(min, sum);
         });
         setStock[sn] = isFinite(min) ? min : 0;
       });
       inventory.forEach(p => {
-        const sn = (p.set_name || '').trim();
+        const sn = setKeyOfProduct(p);
         p.set_name = sn || null;
         p.is_set = !!sn;
         p.set_units = sn ? (setStock[sn] || 0) : 0;   // 这套还能组成几套

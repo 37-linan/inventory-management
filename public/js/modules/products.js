@@ -373,18 +373,23 @@ ${rowsHtml}
       `<div style="font-size:11px;color:var(--text-light);margin-top:2px;">这一套共 ${list.length + 1} 个编码，保存后显示成同一行</div>`;
   },
 
-  // 把一个编码并入套装：已存在的商品只挂到这一套（不动它自己的信息），不存在才新建
+  // 把一个编码并入套装：已存在的商品挂到这一套（并改成这一套的名称），不存在才新建
+  // ❗名称就是归组键 → 并进来必须把它的名称改成这一套的名称，否则合不到一行
+  // ❗带上 sync_rename:false：只改这一个编码，别把它原先同名的商品一起拖进来
   async _joinSet(code, setName, fields) {
+    const nm = String(setName || '').trim();
     const exist = (this._allProducts || []).find(p => String(p.code) === String(code));
     if (exist) {
       await API.put(`/api/main/products/id/${exist.id}`, {
-        code: exist.code, name: exist.name, spec: exist.spec, unit: exist.unit,
+        code: exist.code, name: nm || exist.name, spec: exist.spec, unit: exist.unit,
         market_price: exist.market_price, type: exist.type, bundle_qty: exist.bundle_qty,
-        is_set: true, set_name: setName
+        is_set: true, set_name: nm, sync_rename: false
       });
       return 'joined';
     }
-    await API.post('/api/main/products', Object.assign({}, fields, { code, is_set: true, set_name: setName }));
+    await API.post('/api/main/products', Object.assign({}, fields, {
+      name: nm || fields.name, code, is_set: true, set_name: nm
+    }));
     return 'created';
   },
 
@@ -398,6 +403,18 @@ ${rowsHtml}
       .replace(/'/g, '&#39;');
   },
 
+  // 套装归组键 = 商品名称（用户不手填套装名）
+  // ❗不读 set_name 字段做归组：历史数据里可能有手打错别字（Whoo水姸/Whoo水妍），
+  //   那样同一套会被显示成两行。只要勾了套装就按名称归组（与后端 setKeyOfProduct 同口径）
+  _setKeyOf(p) {
+    if (!p) return '';
+    const flagged = p.is_set === true || p.is_set === 'true' || p.is_set === 1 || p.is_set === '1';
+    const nm = String(p.name || '').trim();
+    const sn = String(p.set_name || '').trim();
+    if (!flagged && !sn) return '';
+    return nm || sn;
+  },
+
   // ===== 套装：列表里同一套装名的多个编码合成一行 =====
   // 把某类型下的产品按「套装」合并成显示行：
   //   套装名非空的多个组成商品 → 合成一行（多个编码同格、共用一个名称）
@@ -408,7 +425,7 @@ ${rowsHtml}
     const rows = [];
     const pos = {};
     (items || []).forEach(p => {
-      const sn = String(p.set_name || '').trim();
+      const sn = this._setKeyOf(p);
       if (!sn) { rows.push({ isSet: false, set_name: '', items: [p] }); return; }
       const key = 'sn:' + sn;
       if (pos[key] === undefined) {
@@ -560,7 +577,7 @@ ${rowsHtml}
     if (!code) { showToast('先扫码或输入一个编码'); return; }
     if (ref.members.some(m => String(m.code) === code)) { showToast('这个编码已经在这一套里了'); return; }
     const lead = ref.members[0];
-    const setName = String(lead.set_name || lead.name).trim();
+    const setName = this._setKeyOf(lead) || String(lead.name || '').trim();
     try {
       // 重新拉一次商品表，确保能判断这个编码是否已存在
       try { this._allProducts = await API.get('/api/main/products'); } catch (e) { /* 用缓存兜底 */ }
@@ -933,9 +950,10 @@ ${rowsHtml}
       showModal(`编辑物品 - ${systemLabel}`);
 
       // 已经是套装的：把同一套里已有的其它编码列出来（只展示，加新码用下面的输入框）
-      const setName0 = String(product.set_name || '').trim();
+      // ❗用 _setKeyOf（= 名称）找同套成员，别读 set_name 字段（可能是历史错别字）
+      const setName0 = this._setKeyOf(product);
       const siblings = setName0
-        ? all.filter(p => String(p.set_name || '').trim() === setName0 && String(p.id) !== String(product.id))
+        ? all.filter(p => this._setKeyOf(p) === setName0 && String(p.id) !== String(product.id))
         : [];
       const siblingsHint = siblings.length
         ? `<div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;line-height:1.6;">
@@ -986,7 +1004,7 @@ ${rowsHtml}
             <label>套组数量</label>
             <input type="number" id="edit-bundle-qty" value="${product.bundle_qty || 1}" min="1" max="999" />
           </div>` : ''}
-          ${this._setBlockHtml('edit', !!String(product.set_name || '').trim(), siblingsHint)}
+          ${this._setBlockHtml('edit', !!this._setKeyOf(product), siblingsHint)}
           <div class="form-actions">
             <button type="submit" class="btn btn-primary btn-lg">保存修改</button>
             <button type="button" class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
