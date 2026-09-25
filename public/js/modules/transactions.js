@@ -767,11 +767,16 @@ const TransactionsModule = {
       if (!valEl) return;
       const cost = parseFloat(res.cost_price) || 0;
 
-      // 还没出库：只显示成本，利润待出库
+      // 还没出库 / 只出了其中几件：只显示成本，利润要等整单出库
       if (!res.has_out) {
         valEl.style.color = 'var(--text-secondary)';
-        valEl.textContent = '待出库';
-        detEl.innerHTML = `成本 ¥${cost.toFixed(2)}<br>销售 待出库`;
+        if (res.partial_out) {
+          valEl.textContent = '部分出库';
+          detEl.innerHTML = `成本 ¥${cost.toFixed(2)}<br>还有 ${res.pending_items} 项未出库`;
+        } else {
+          valEl.textContent = '待出库';
+          detEl.innerHTML = `成本 ¥${cost.toFixed(2)}<br>销售 待出库`;
+        }
         return;
       }
       // 已出库但出库次日还没录行情：待行情
@@ -868,7 +873,11 @@ const TransactionsModule = {
       }
 
       let summaryText;
-      if (!res.has_out) summaryText = '<span style="color:var(--text-secondary);">尚未出库，无法计算</span>';
+      if (!res.has_out) {
+        summaryText = res.partial_out
+          ? `<span style="color:#e65100;">本单 ${res.total_items} 项里已出 ${res.total_items - res.pending_items} 项，还有 ${res.pending_items} 项未出库 —— 整单出库后才计入盈亏总览</span>`
+          : '<span style="color:var(--text-secondary);">尚未出库，无法计算</span>';
+      }
       else if (!res.has_market) summaryText = '<span style="color:var(--text-secondary);">出库次日行情未录，暂无法计算</span>';
       else summaryText = `<strong>销售 ${res.detail.filter(r => r.out_qty > 0 && !r.set_member).length} 项</strong> = ¥${sale.toFixed(2)}`;
 
@@ -878,7 +887,9 @@ const TransactionsModule = {
             <div>订单号：<strong style="color:var(--primary);">${orderNo}</strong></div>
             <div>成本（整单金额）：<strong>¥${cost.toFixed(2)}</strong></div>
             <div>销售（出库次日行情 × 本单数量）：<strong>${summaryText}</strong></div>
-            <div>单利润：<strong style="color:${profitColor};font-size:16px;">${profit >= 0 ? '+' : ''}¥${profit.toFixed(2)}</strong></div>
+            <div>单利润：${res.has_out
+              ? `<strong style="color:${profitColor};font-size:16px;">${profit >= 0 ? '+' : ''}¥${profit.toFixed(2)}</strong>`
+              : '<strong style="color:var(--text-secondary);font-size:16px;">待整单出库</strong>'}</div>
             ${res.await_price ? `<div style="margin-top:8px;padding:8px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;color:#8a6d00;line-height:1.6;">本单有 <strong>${res.await_count}</strong> 项是<b>今天出库</b>，出库次日（<strong>${res.await_date}</strong>）的行情还没到，上面的销售和利润是先用最近一次的价（${res.detail.filter(r => r.await_price && r.price_date).map(r => r.price_date).join('、')}）<strong>暂计</strong>。明天录入 ${res.await_date} 的价后会自动重算，不用手动改。</div>` : ''}
           </div>
           <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">各商品计算明细：</div>
@@ -1567,6 +1578,9 @@ const TransactionsModule = {
     const pendingNote = Number(t.pending_count) > 0
       ? `<div style="font-size:11px;color:var(--text-light);">另有 ${t.pending_count} 单尚未出库（本金 ${this._fmtMoney(t.pending_invest)}），按约定不计入上面的统计</div>`
       : '';
+    const partialNote = Number(t.partial_count) > 0
+      ? `<div style="font-size:11px;color:#8a6d00;margin-top:6px;">其中 ${t.partial_count} 单是「部分出库」（本金 ${this._fmtMoney(t.partial_invest)}）：一单里只出了其中几件，剩下几件也出了才整单出库、才计入上面的统计</div>`
+      : '';
     const awaitNote = Number(t.await_count) > 0
       ? `<div style="font-size:11px;color:#8a6d00;margin-top:6px;">其中 ${t.await_count} 单是今天出库（收益 ${this._fmtMoney(t.await_revenue)}），出库次日的行情还没到，暂按最近一次价计；明天录入次日价后自动重算</div>`
       : '';
@@ -1592,6 +1606,7 @@ const TransactionsModule = {
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-top:12px;">
             <div style="flex:1;min-width:240px;">
               ${pendingNote}
+              ${partialNote}
               ${awaitNote}
             </div>
             <button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-top:2px;" onclick="TransactionsModule._showInvestDetail()" title="每一单的下单设备 / 采购本金 / 收益 / 盈亏 / 出库日期，点进去还能按下单设备拆分">查看明细 ›</button>
@@ -1682,7 +1697,8 @@ const TransactionsModule = {
             </tfoot>
           </table>
         </div>
-        <div style="font-size:11px;color:var(--text-light);margin-top:10px;">尚未出库的单不计入「总投入」；等它们出库后会自动进这张表。</div>
+        <div style="font-size:11px;color:var(--text-light);margin-top:10px;">未出库、以及只出了其中几件的单都不计入「总投入」；等整单出库后会自动进这张表。</div>
+        ${Number(t.partial_count) > 0 ? `<div style="font-size:11px;color:#8a6d00;margin-top:8px;">另有 ${t.partial_count} 单只出了其中几件（本金 ${this._fmtMoney(t.partial_invest)}），按约定要等整单出库才计入，所以不在这张表里。</div>` : ''}
         ${awaitOrders.length > 0 ? `<div style="font-size:11px;color:#8a6d00;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:8px;margin-top:8px;line-height:1.6;">带「待次日」的 ${awaitOrders.length} 单是<b>今天出库</b>，出库次日的行情还没到，现在的收益是按最近一次价<b>暂计</b>。明天录入次日行情价后会<b>自动重算</b>，不用做任何操作。</div>` : ''}
         <div style="margin-top:14px;text-align:right;">
           <button class="btn btn-secondary" onclick="closeModal()">关闭</button>

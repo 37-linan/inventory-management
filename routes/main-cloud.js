@@ -819,14 +819,14 @@ module.exports = function(db) {
   router.get('/order-profit', async (req, res) => {
     try {
       const orderNo = req.query.orderNo;
-      if (!orderNo) return res.json({ profit: 0, sale_price: 0, cost_price: 0, has_out: false, has_market: false, completed: false, detail: [] });
+      if (!orderNo) return res.json({ profit: 0, sale_price: 0, cost_price: 0, has_out: false, any_out: false, partial_out: false, has_market: false, completed: false, pending_items: 0, total_items: 0, detail: [] });
 
       const orderInRes = await db.query(
         'SELECT * FROM main_inbound WHERE order_no = ? ORDER BY id ASC',
         [orderNo]
       );
       const orderItems = orderInRes.rows;
-      if (orderItems.length === 0) return res.json({ profit: 0, sale_price: 0, cost_price: 0, has_out: false, has_market: false, completed: false, detail: [] });
+      if (orderItems.length === 0) return res.json({ profit: 0, sale_price: 0, cost_price: 0, has_out: false, any_out: false, partial_out: false, has_market: false, completed: false, pending_items: 0, total_items: 0, detail: [] });
 
       // 成本 = 整单金额（首个商品填的），始终显示
       const totalCost = Number(orderItems[0].purchase_price) || 0;
@@ -840,8 +840,10 @@ module.exports = function(db) {
       nameRes.rows.forEach(r => { nameMap[r.code] = r.name; });   // 后者覆盖前者 = 取最新一条
 
       let totalSale = 0;
-      let hasOut = false;   // 本单是否有商品出库过
-      let allOut = true;    // 本单是否全部出完
+      let anyShipped = false;  // 本单是否有商品出库过（含只出了一部分的情况）
+      let allShipped = true;   // 本单每一件商品是否都出过库 —— 只有整单都出库才算「已出库」
+      let pendingItems = 0;    // 还没出过库的商品数（有几件一件都没出）
+      let allOut = true;       // 本单是否全部出完（每件都出满，仅用于展示）
       const detail = [];
 
       // 按套装归组：同一单里同「套装名」的多个编码合成一套，只算一次套价（详见文件顶部套装说明）
@@ -860,6 +862,11 @@ module.exports = function(db) {
         // 出库日：取组内第一条有出库日的记录（套装成套出库，各条一般同一天）
         const anyOut = rows.find(x => x.outDate);
         const groupOutDate = anyOut ? anyOut.outDate : '';
+
+        // 这一组（普通商品=这一条；套装=整套里任一条）是否出过库
+        const groupShipped = rows.some(x => x.outQty > 0);
+        if (groupShipped) anyShipped = true;
+        else { allShipped = false; pendingItems++; }
 
         if (!g.isSet) {
           // ---- 普通商品：一条记录算一次（原口径不变）----
@@ -880,7 +887,6 @@ module.exports = function(db) {
           row.await_price = !!(x.outQty > 0 && row.next_day && row.next_day > today);
 
           if (x.outQty > 0) {
-            hasOut = true;
             const mp = pickMarketPrice(priceMap, x.code, x.outDate);
             const salePrice = mp ? mp.price : 0;
             if (mp) row.price_date = mp.date;
@@ -902,7 +908,6 @@ module.exports = function(db) {
         const salePrice = mp ? mp.price : 0;
         const awaitFlag = !!(setOut && groupOutDate && nextDayOf(groupOutDate) > today);
         if (setOut) {
-          hasOut = true;
           totalSale += salePrice * units;                  // ✅ 一套只算一次（不再按每个编码各算一遍）
         }
         rows.forEach((x, i) => {
@@ -927,8 +932,12 @@ module.exports = function(db) {
         sale_price: Number(totalSale.toFixed(2)),
         cost_price: Number(totalCost.toFixed(2)),
         profit: Number((totalSale - totalCost).toFixed(2)),
-        has_out: hasOut,
-        has_market: hasOut && totalSale > 0,
+        has_out: allShipped,                        // 整单出库（每一件都出过库）→ 才计入盈亏
+        any_out: anyShipped,                        // 有任意一件出过库（可能只是部分出库）
+        partial_out: anyShipped && !allShipped,     // 部分出库：出了几件、还有没出的
+        pending_items: pendingItems,                // 还没出过库的商品数
+        total_items: groups.length,                 // 本单商品组数（一个套装算一组）
+        has_market: allShipped && totalSale > 0,
         completed: allOut,
         await_price: awaitRows.length > 0,               // 本单是否在「等次日行情」
         await_count: awaitRows.length,
@@ -944,8 +953,10 @@ module.exports = function(db) {
 
   // ========== 盈亏仪表盘 ==========
 
-  // 口径（2026-09-14 与用户确认定稿）：
-  //   1. 只统计「已出库」的单号（本单有商品出过库）——未出库的单不参与，等出库后自动进榜
+  // 口径（2026-09-14 定稿，2026-09-25 修订第 1 条）：
+  //   1. 只统计「整单已出库」的单号 —— ❗每一件商品都出过库才算（2026-09-25 起）。
+  //      一单里只出了其中几件 → 整单仍算「未出库」，本金不进总投入。否则会出现
+  //      「只出了配件盒、却按整单相机成本扣 579」这种假亏损。剩下几件出库后自动进榜。
   //   2. 成本 = 该单第一条商品的 purchase_price（整单金额），与 order-profit 完全一致
   //   3. 收益 = Σ 各商品（行情价 × 入库数量），行情价 = 出库日次日价，没录则取出库日当天/之前最近价
   //   4. 走势图按「出库日期」归到自然周（周一起）
@@ -972,6 +983,7 @@ module.exports = function(db) {
       });
 
       let invest = 0, revenue = 0, pendingInvest = 0, pendingCount = 0, outCount = 0, awaitCount = 0, awaitRevenue = 0;
+      let partialCount = 0, partialInvest = 0;   // 其中「部分出库」的单：出了几件、还有没出的
       const weekMap = {};
       const devMap = {};
       const orderList = [];
@@ -982,32 +994,43 @@ module.exports = function(db) {
         // 下单设备/下级：单内一般一致，取本单首个填了值的商品
         const devItem = items.find(x => String(x.device || '').trim() !== '');
         const device = devItem ? String(devItem.device).trim() : '';
-        let sale = 0, hasOut = false, lastDay = '', awaitFlag = false;
+        let sale = 0, lastDay = '', awaitFlag = false;
 
         // 按套装归组：同「套装名」的多个编码合成一套，只算一次套价（详见文件顶部套装说明）
         const setGroups = groupItemsBySet(items, setMap);
+
+        // 每一组（普通商品=这一条；套装=整套）是否出过库
+        const groupShipped = setGroups.map(g => g.items.some(it => (Number((alloc[it.id] || {}).out_qty) || 0) > 0));
+        const anyShipped = groupShipped.some(Boolean);
+        const allShipped = groupShipped.every(Boolean);   // 每一件都出过库 → 整单才算「已出库」
+
+        // ❗2026-09-25 口径：没全部出库 → 这单仍算「未出库」，本金不进总投入
+        if (!allShipped) {
+          pendingInvest += cost;
+          pendingCount++;
+          if (anyShipped) { partialCount++; partialInvest += cost; }
+          return;
+        }
+
         setGroups.forEach(g => {
           const outInfo = g.items.map(it => ({ it, a: alloc[it.id] }));
-          const anyOut = outInfo.find(x => x.a && x.a.out_qty > 0);
-          if (!anyOut) return;   // 这一套（或这件商品）没被出库消耗 → 不算
-          hasOut = true;
-          if (anyOut.a.out_date > lastDay) lastDay = anyOut.a.out_date;
+          const hit = outInfo.find(x => x.a && x.a.out_qty > 0);
+          if (!hit) return;   // 整单已出库时不该发生，保险起见
+          if (hit.a.out_date > lastDay) lastDay = hit.a.out_date;
           // 出库日次日还没到（今天才出库）→ 这一单的收益只是暂计，明天录价后会自动重算
-          if (anyOut.a.out_date && nextDayOf(anyOut.a.out_date) > today) awaitFlag = true;
+          if (hit.a.out_date && nextDayOf(hit.a.out_date) > today) awaitFlag = true;
 
           if (g.isSet) {
             // 套装：套数 = 组内第一个编码的数量合计，行情取第一个编码的价 → 一套只算一次
             const units = setUnitsOf(g);
-            const mp = pickMarketPrice(priceMap, g.items[0].product_code, anyOut.a.out_date);
+            const mp = pickMarketPrice(priceMap, g.items[0].product_code, hit.a.out_date);
             if (mp) sale += mp.price * units;
           } else {
             const it = g.items[0];
-            const mp = pickMarketPrice(priceMap, it.product_code, anyOut.a.out_date);
+            const mp = pickMarketPrice(priceMap, it.product_code, hit.a.out_date);
             if (mp) sale += mp.price * (Number(it.quantity) || 0);
           }
         });
-
-        if (!hasOut) { pendingInvest += cost; pendingCount++; return; }
 
         sale = Number(sale.toFixed(2));
         const profit = Number((sale - cost).toFixed(2));
@@ -1067,6 +1090,9 @@ module.exports = function(db) {
           order_count: outCount,
           pending_count: pendingCount,
           pending_invest: Number(pendingInvest.toFixed(2)),
+          // 其中「部分出库」的单：一单里只出了一部分商品，整单出库后才计入上面的统计
+          partial_count: partialCount,
+          partial_invest: Number(partialInvest.toFixed(2)),
           // 其中「今天出库、出库次日行情还没到」的单：收益只是暂计，明天录价后自动重算
           await_count: awaitCount,
           await_revenue: Number(awaitRevenue.toFixed(2))
