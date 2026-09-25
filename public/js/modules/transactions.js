@@ -767,10 +767,14 @@ const TransactionsModule = {
       if (!valEl) return;
       const cost = parseFloat(res.cost_price) || 0;
 
-      // 还没出库 / 只出了其中几件：只显示成本，利润要等整单出库
+      // 还没出库 / 只出了其中几件 / 发到档口寄存：只显示成本，利润要等卖出去才谈得上
       if (!res.has_out) {
         valEl.style.color = 'var(--text-secondary)';
-        if (res.partial_out) {
+        if (res.holding) {
+          valEl.style.color = '#e65100';
+          valEl.textContent = '寄存中';
+          detEl.innerHTML = `成本 ¥${cost.toFixed(2)}<br>在档口寄存，还没卖出`;
+        } else if (res.partial_out) {
           valEl.textContent = '部分出库';
           detEl.innerHTML = `成本 ¥${cost.toFixed(2)}<br>还有 ${res.pending_items} 项未出库`;
         } else {
@@ -874,9 +878,13 @@ const TransactionsModule = {
 
       let summaryText;
       if (!res.has_out) {
-        summaryText = res.partial_out
-          ? `<span style="color:#e65100;">本单 ${res.total_items} 项里已出 ${res.total_items - res.pending_items} 项，还有 ${res.pending_items} 项未出库 —— 整单出库后才计入盈亏总览</span>`
-          : '<span style="color:var(--text-secondary);">尚未出库，无法计算</span>';
+        if (res.holding) {
+          summaryText = '<span style="color:#e65100;">这一单在<b>档口寄存</b>、还没卖出，暂不计入盈亏总览；等你点「已卖出」，就按卖出当天的行情价计算</span>';
+        } else {
+          summaryText = res.partial_out
+            ? `<span style="color:#e65100;">本单 ${res.total_items} 项里已出 ${res.total_items - res.pending_items} 项，还有 ${res.pending_items} 项未出库 —— 整单出库后才计入盈亏总览</span>`
+            : '<span style="color:var(--text-secondary);">尚未出库，无法计算</span>';
+        }
       }
       else if (!res.has_market) summaryText = '<span style="color:var(--text-secondary);">出库次日行情未录，暂无法计算</span>';
       else summaryText = `<strong>销售 ${res.detail.filter(r => r.out_qty > 0 && !r.set_member).length} 项</strong> = ¥${sale.toFixed(2)}`;
@@ -889,7 +897,9 @@ const TransactionsModule = {
             <div>销售（出库次日行情 × 本单数量）：<strong>${summaryText}</strong></div>
             <div>单利润：${res.has_out
               ? `<strong style="color:${profitColor};font-size:16px;">${profit >= 0 ? '+' : ''}¥${profit.toFixed(2)}</strong>`
-              : '<strong style="color:var(--text-secondary);font-size:16px;">待整单出库</strong>'}</div>
+              : (res.holding
+                  ? '<strong style="color:#e65100;font-size:16px;">寄存中（未卖出）</strong>'
+                  : '<strong style="color:var(--text-secondary);font-size:16px;">待整单出库</strong>')}</div>
             ${res.await_price ? `<div style="margin-top:8px;padding:8px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;color:#8a6d00;line-height:1.6;">本单有 <strong>${res.await_count}</strong> 项是<b>今天出库</b>，出库次日（<strong>${res.await_date}</strong>）的行情还没到，上面的销售和利润是先用最近一次的价（${res.detail.filter(r => r.await_price && r.price_date).map(r => r.price_date).join('、')}）<strong>暂计</strong>。明天录入 ${res.await_date} 的价后会自动重算，不用手动改。</div>` : ''}
           </div>
           <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">各商品计算明细：</div>
@@ -909,7 +919,8 @@ const TransactionsModule = {
           </div>
           <p style="margin-top:12px;padding:10px;background:rgba(26,115,232,0.06);border-left:3px solid var(--primary);font-size:12px;color:var(--text-secondary);line-height:1.6;">
             <strong>计算规则：</strong>成本 = 整单金额（首个商品填的金额）；销售 = 各商品「出库日次日」录的行情价 × 该商品在本单内的全部数量；利润 = 销售 - 成本。<br>
-            <strong>怎么算「已出库」：</strong>按同一物品编码的入库时间<b>先进先出</b>——出库量从最早入库的那批开始扣，扣到了本单这批才算本单已出库（因为出库记录里没登记属于哪一张入库单）。
+            <strong>怎么算「已出库」：</strong>按同一物品编码的入库时间<b>先进先出</b>——出库量从最早入库的那批开始扣，扣到了本单这批才算本单已出库（因为出库记录里没登记属于哪一张入库单）。<br>
+            ${res.hold_sold ? `<strong>寄存计价：</strong>这一单是<b>档口寄存</b>后卖出的，寄存在档口的商品按<b>卖出日 ${res.hold_sold}</b> 的行情价计算（没寄存的商品仍按出库日）。` : ''}
           </p>
         </div>
       `;
@@ -1581,6 +1592,9 @@ const TransactionsModule = {
     const partialNote = Number(t.partial_count) > 0
       ? `<div style="font-size:11px;color:#8a6d00;margin-top:6px;">其中 ${t.partial_count} 单是「部分出库」（本金 ${this._fmtMoney(t.partial_invest)}）：一单里只出了其中几件，剩下几件也出了才整单出库、才计入上面的统计</div>`
       : '';
+    const holdNote = Number(t.hold_count) > 0
+      ? `<div style="font-size:11px;color:#e65100;margin-top:6px;">另有 ${t.hold_count} 单在<b>档口寄存中</b>（本金 ${this._fmtMoney(t.hold_invest)}）：货已经出库但还没卖，按约定不计入上面的统计；等你点「已卖出」，就按卖出当天的行情价算进来</div>`
+      : '';
     const awaitNote = Number(t.await_count) > 0
       ? `<div style="font-size:11px;color:#8a6d00;margin-top:6px;">其中 ${t.await_count} 单是今天出库（收益 ${this._fmtMoney(t.await_revenue)}），出库次日的行情还没到，暂按最近一次价计；明天录入次日价后自动重算</div>`
       : '';
@@ -1607,6 +1621,7 @@ const TransactionsModule = {
             <div style="flex:1;min-width:240px;">
               ${pendingNote}
               ${partialNote}
+              ${holdNote}
               ${awaitNote}
             </div>
             <button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-top:2px;" onclick="TransactionsModule._showInvestDetail()" title="每一单的下单设备 / 采购本金 / 收益 / 盈亏 / 出库日期，点进去还能按下单设备拆分">查看明细 ›</button>
@@ -2168,6 +2183,10 @@ const TransactionsModule = {
       }
       if (dash && dash.totals) html += this._renderLedgerDashboard(dash);
 
+      // 寄存（发到档口 · 还没卖）：独立板块 —— 填单号登记，整单压着不计盈亏，
+      // 点「已卖出」后按卖出当天的行情价计入统计（见 _renderHoldSection）
+      if (system === 'main') html += this._renderHoldSection(system);
+
       // 全局筛选表单
       html += `
         <div class="card" style="margin-bottom:12px;">
@@ -2259,7 +2278,7 @@ const TransactionsModule = {
                       <td style="text-align:center;">${showBq && bq > 1 ? '<span style="color:#fbbc04;font-weight:500;">×' + bq + '</span>' : '<span style="color:#bbb;">-</span>'}</td>
                       <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
                       <td>${r.location || '-'}</td>
-                      <td title="${r.price_date ? '行情取自 ' + r.price_date : ''}">${r.set_member ? '<span style="color:var(--text-light);" title="同一套装只在代表行记一次整套销售额">并入套装</span>' : (r.sale_price ? '¥' + r.sale_price : '-')}</td>
+                      <td title="${r.hold_status === 'holding' ? '这单发到档口寄存、还没卖，先不计销售额' : (r.price_date ? '行情取自 ' + r.price_date : '')}">${r.hold_status === 'holding' ? '<span class="badge" style="background:#fff8e1;color:#e65100;">寄存中</span>' : (r.set_member ? '<span style="color:var(--text-light);" title="同一套装只在代表行记一次整套销售额">并入套装</span>' : (r.sale_price ? '¥' + r.sale_price : '-'))}</td>
                       <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule._deleteLedgerRecord('${sys}','outbound',${r.id})">删除</button></td>
                     </tr>`;
                     }).join('')}
@@ -2279,8 +2298,230 @@ const TransactionsModule = {
       }
 
       container.innerHTML = html;
+      if (system === 'main') this._loadHoldList(system);   // 寄存板块：列表异步填进上面的骨架
     } catch (e) {
       container.innerHTML = `<div class="card"><div class="card-body"><p style="color:var(--danger);">加载失败: ${e.message}</p></div></div>`;
+    }
+  },
+
+  // ================================================================
+  //  寄存（发到档口 · 还没卖）
+  //  货已经出库、发到档口寄存，但还没卖出去 → 整单压着不计入盈亏；
+  //  点「已卖出」后，被寄存的商品按「卖出当天」的行情价计价，整单再回到统计里。
+  // ================================================================
+  _renderHoldSection(system) {
+    return `
+      <div class="card" style="margin-bottom:12px;border-color:#ffe0b2;">
+        <div class="card-header" style="background:#fff8e1;">
+          <h3 style="color:#e65100;">寄存（发到档口 · 还没卖）</h3>
+          <span id="hold-count-hint" style="font-size:12px;color:var(--text-light);"></span>
+        </div>
+        <div class="card-body">
+          <div style="font-size:12px;color:var(--text-secondary);line-height:1.7;margin-bottom:10px;">
+            货已经出库、发到档口寄存的，在这儿填单号登记一下 —— 这一单会<b>整单压着</b>，不计入盈亏总览。<br>
+            等货卖掉了，点「已卖出」，系统就按<b>卖出当天的行情价</b>把它算进来。
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input type="text" id="hold-order-input" placeholder="填写单号（订单号 / 快递单号）"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();TransactionsModule._openHoldPicker();}"
+                   style="flex:1;min-width:180px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:14px;" />
+            <button class="btn btn-primary" onclick="TransactionsModule._openHoldPicker()">登记寄存</button>
+          </div>
+          <div id="hold-list" style="margin-top:12px;">
+            <div style="text-align:center;padding:14px;color:var(--text-light);font-size:12px;">加载中...</div>
+          </div>
+        </div>
+      </div>
+    `;
+  },
+
+  async _loadHoldList(system) {
+    const box = document.getElementById('hold-list');
+    if (!box) return;
+    try {
+      const data = await API.get(`/api/${system}/hold`);
+      const holding = data.holding || [];
+      const hint = document.getElementById('hold-count-hint');
+      if (hint) hint.textContent = holding.length ? `寄存中 ${holding.length} 单` : '';
+      if (holding.length === 0) {
+        box.innerHTML = '<div style="text-align:center;padding:14px;color:var(--text-light);font-size:12px;background:var(--bg);border-radius:8px;">目前没有寄存中的单</div>';
+        return;
+      }
+      box.innerHTML = holding.map(g => this._renderHoldRow(g)).join('');
+    } catch (e) {
+      box.innerHTML = `<div style="padding:12px;color:var(--danger);font-size:12px;">寄存列表加载失败：${this._escHtml(e.message)}</div>`;
+    }
+  },
+
+  // 寄存中的一单：单号 / 寄存天数 / 本金 / 商品明细 / 操作
+  _renderHoldRow(g) {
+    const items = (g.rows || []).map(r => `
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;">
+        <span><code style="background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:11px;">${this._escHtml(r.product_code)}</code> ${this._escHtml(r.name || '')}</span>
+        <span style="color:var(--text-secondary);white-space:nowrap;">×${this._fmtQty(r.quantity)}　出库 ${r.out_date || '-'}</span>
+      </div>`).join('');
+    const days = this._holdDays(g.hold_date);
+    const dayTxt = g.hold_date ? `寄存日 ${g.hold_date}${days !== '' ? `（已 ${days} 天）` : ''}` : '';
+    return `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;background:var(--card-bg,#fff);">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:200px;">
+            <div style="font-size:14px;font-weight:600;color:var(--primary);">${this._escHtml(g.order_no)}</div>
+            <div style="font-size:11px;color:var(--text-light);margin-top:3px;">${dayTxt}${dayTxt ? '　' : ''}本金 ${this._fmtMoney(g.cost)}${g.device ? '　设备 ' + this._escHtml(g.device) : ''}</div>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);">${items}</div>
+            <div style="font-size:11px;color:#e65100;margin-top:8px;">这 ${g.item_count} 项货已经出库，但还没卖出 —— 暂不计入盈亏总览。</div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:6px;white-space:nowrap;">
+            <button class="btn btn-sm btn-primary" data-order="${this._escHtml(g.order_no)}" onclick="TransactionsModule._holdSell(this.dataset.order)">已卖出</button>
+            <button class="btn btn-sm btn-secondary" data-order="${this._escHtml(g.order_no)}" onclick="TransactionsModule._cancelHold(this.dataset.order)">取消寄存</button>
+          </div>
+        </div>
+      </div>`;
+  },
+
+  // 寄存了几天（按本地日期算；算不出来返回空串）
+  _holdDays(day) {
+    if (!day) return '';
+    const a = new Date(day + 'T00:00:00');
+    const b = new Date(this._todayLocal() + 'T00:00:00');
+    if (isNaN(a.getTime()) || isNaN(b.getTime())) return '';
+    return Math.max(0, Math.round((b - a) / 86400000));
+  },
+
+  // 点「登记寄存」：先拉这单「已经出过库」的商品，让人勾选（没出库的不能寄存）
+  async _openHoldPicker() {
+    const sys = this.currentSystem || 'main';
+    const input = document.getElementById('hold-order-input');
+    const orderNo = input ? input.value.trim() : '';
+    if (!orderNo) { showToast('请先填单号'); if (input) input.focus(); return; }
+    try {
+      const res = await API.get(`/api/${sys}/hold/order-items?orderNo=${encodeURIComponent(orderNo)}`);
+      if (!res.found) { showToast('没找到这个单号的入库记录'); return; }
+      if (!res.items || res.items.length === 0) { showToast('这一单的商品都还没出库，不能登记寄存'); return; }
+      this._holdPickerOrderNo = orderNo;
+      this._holdPickerItems = res.items;
+      this._holdPicked = {};
+      res.items.forEach((it, i) => { this._holdPicked[i] = it.can_hold > 0; });   // 默认勾上还能登记的
+      showModal('📦 登记寄存 · ' + orderNo);
+      document.getElementById('modal-body').innerHTML = this._holdPickerHtml(orderNo, res);
+    } catch (e) {
+      showToast('加载失败：' + e.message);
+    }
+  },
+
+  _holdPickerHtml(orderNo, res) {
+    const rows = res.items.map((it, i) => {
+      const disabled = it.can_hold <= 0;
+      const checked = this._holdPicked[i] ? 'checked' : '';
+      const setName = it.is_set ? '<span class="badge" style="background:#ede7f6;color:#5e35b1;font-size:10px;margin-left:4px;">套装</span>' : '';
+      const codes = (it.codes || []).join('、');
+      return `
+        <label style="display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;${disabled ? 'opacity:0.55;' : 'cursor:pointer;'}">
+          <input type="checkbox" ${checked} ${disabled ? 'disabled' : `onchange="TransactionsModule._toggleHoldPick(${i}, this.checked)"`} style="margin-top:3px;width:18px;height:18px;flex-shrink:0;" />
+          <div style="flex:1;">
+            <div style="font-size:13px;font-weight:600;">${this._escHtml(it.name || it.product_code)}${setName}</div>
+            <div style="font-size:11px;color:var(--text-light);margin-top:2px;"><code>${this._escHtml(codes)}</code></div>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">出库 ${this._fmtQty(it.out_qty)} 件　出库日 ${it.out_date || '-'}${disabled ? `　<span style="color:#e65100;">（已登记寄存 ${this._fmtQty(it.hold_qty)}）</span>` : ''}</div>
+          </div>
+        </label>`;
+    }).join('');
+
+    return `
+      <div style="padding:4px 0;">
+        <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);line-height:1.7;">
+          单号 <strong style="color:var(--primary);">${this._escHtml(orderNo)}</strong>　本金 <strong>${this._fmtMoney(res.cost)}</strong>${res.device ? `　设备 ${this._escHtml(res.device)}` : ''}<br>
+          下面只列出<b>已经出过库</b>的商品（寄存的前提是货已经发出去了）。勾选真正发到档口的那几件。
+        </div>
+        ${rows || '<div style="padding:16px;text-align:center;color:var(--text-light);">没有可寄存的商品</div>'}
+        <div style="font-size:11px;color:#e65100;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:8px;line-height:1.7;">
+          登记后这一单会<b>整单压着</b>，先不计入盈亏总览。等你回这儿点「已卖出」，就会按<b>卖出当天的行情价</b>把它算进去。
+        </div>
+        <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" onclick="TransactionsModule._submitHold()">确认登记</button>
+        </div>
+      </div>`;
+  },
+
+  _toggleHoldPick(i, checked) { this._holdPicked[i] = !!checked; },
+
+  async _submitHold() {
+    const sys = this.currentSystem || 'main';
+    const orderNo = this._holdPickerOrderNo;
+    const items = this._holdPickerItems || [];
+    const picked = [];
+    items.forEach((it, i) => {
+      if (!this._holdPicked[i] || it.can_hold <= 0) return;
+      (it.members || []).forEach(m => {
+        if (m.out_qty > 0) picked.push({ inbound_id: m.inbound_id, product_code: m.product_code, quantity: m.out_qty });
+      });
+    });
+    if (picked.length === 0) { showToast('请至少勾选一个商品'); return; }
+    try {
+      await API.post(`/api/${sys}/hold`, { order_no: orderNo, items: picked });
+      closeModal();
+      showToast('已登记寄存：' + orderNo);
+      const input = document.getElementById('hold-order-input');
+      if (input) input.value = '';
+      this._dashData = null;        // 盈亏口径变了，缓存作废
+      this._ledgerData = null;
+      await this.renderLedgerTab(sys);
+    } catch (e) {
+      showToast('登记失败：' + e.message);
+    }
+  },
+
+  // 点「已卖出」：默认按今天算行情，可以改成实际卖出那天
+  _holdSell(orderNo) {
+    if (!orderNo) return;
+    const today = this._todayLocal();
+    showModal('✅ 标记「已卖出」');
+    document.getElementById('modal-body').innerHTML = `
+      <div style="padding:4px 0;">
+        <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);line-height:1.7;">
+          单号 <strong style="color:var(--primary);">${this._escHtml(orderNo)}</strong><br>
+          卖出后这一单会重新计入盈亏总览，收益按<b>卖出当天的行情价</b>计算。
+        </div>
+        <div class="form-group" style="margin-bottom:14px;">
+          <label>卖出日期</label>
+          <input type="date" id="hold-sold-date" value="${today}" style="width:100%;padding:10px;font-size:16px;" />
+          <div style="font-size:11px;color:var(--text-light);margin-top:6px;line-height:1.7;">默认今天。如果实际是前几天卖的，就改成那一天 —— 系统按那天的行情价算。</div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+          <button class="btn btn-primary" data-order="${this._escHtml(orderNo)}" onclick="TransactionsModule._confirmHoldSell(this.dataset.order)">确认已卖出</button>
+        </div>
+      </div>`;
+  },
+
+  async _confirmHoldSell(orderNo) {
+    const sys = this.currentSystem || 'main';
+    const el = document.getElementById('hold-sold-date');
+    const soldDate = el ? el.value : '';
+    try {
+      await API.post(`/api/${sys}/hold/sell`, { order_no: orderNo, sold_date: soldDate });
+      closeModal();
+      showToast('已卖出，按 ' + (soldDate || '今天') + ' 的行情计价');
+      this._dashData = null;
+      this._ledgerData = null;
+      await this.renderLedgerTab(sys);
+    } catch (e) {
+      showToast('操作失败：' + e.message);
+    }
+  },
+
+  async _cancelHold(orderNo) {
+    if (!orderNo) return;
+    if (!confirm('取消这单的寄存？取消后它会按出库日的行情重新计入统计。')) return;
+    const sys = this.currentSystem || 'main';
+    try {
+      await API.del(`/api/${sys}/hold?orderNo=${encodeURIComponent(orderNo)}`);
+      showToast('已取消寄存');
+      this._dashData = null;
+      this._ledgerData = null;
+      await this.renderLedgerTab(sys);
+    } catch (e) {
+      showToast('取消失败：' + e.message);
     }
   },
 
