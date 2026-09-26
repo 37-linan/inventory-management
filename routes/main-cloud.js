@@ -1070,6 +1070,7 @@ module.exports = function(db) {
       let partialCount = 0, partialInvest = 0;   // 其中「部分出库」的单：出了几件、还有没出的
       let holdCount = 0, holdInvest = 0;         // 其中「档口寄存」的单：货已出库、但还没卖
       const weekMap = {};
+      const monthMap = {};
       const devMap = {};
       const orderList = [];
 
@@ -1149,6 +1150,11 @@ module.exports = function(db) {
         const wk = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
         const w = weekMap[wk] || (weekMap[wk] = { week_start: wk, profit: 0, revenue: 0, cost: 0, orders: 0 });
         w.profit += profit; w.revenue += sale; w.cost += cost; w.orders++;
+
+        // 归到自然月（按出库日期所属月份，用于「每月盈亏走势」）
+        const mk = String(lastDay || '1970-01').slice(0, 7);
+        const m = monthMap[mk] || (monthMap[mk] = { month_start: mk, profit: 0, revenue: 0, cost: 0, orders: 0 });
+        m.profit += profit; m.revenue += sale; m.cost += cost; m.orders++;
       });
 
       invest = Number(invest.toFixed(2));
@@ -1166,6 +1172,21 @@ module.exports = function(db) {
           cost: Number(w.cost.toFixed(2)),
           orders: w.orders,
           cumulative: acc
+        };
+      });
+
+      // 自然月汇总（累计值口径与 weekly 一致：按月份升序累加）
+      let macc = 0;
+      const monthly = Object.keys(monthMap).sort().map(k => {
+        const m = monthMap[k];
+        macc = Number((macc + m.profit).toFixed(2));
+        return {
+          month_start: m.month_start,
+          profit: Number(m.profit.toFixed(2)),
+          revenue: Number(m.revenue.toFixed(2)),
+          cost: Number(m.cost.toFixed(2)),
+          orders: m.orders,
+          cumulative: macc
         };
       });
 
@@ -1199,6 +1220,7 @@ module.exports = function(db) {
           await_revenue: Number(awaitRevenue.toFixed(2))
         },
         weekly,
+        monthly,
         by_device: byDevice,
         orders: orderList
       });

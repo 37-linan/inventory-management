@@ -1603,7 +1603,7 @@ const TransactionsModule = {
       <div class="card" style="margin-bottom:12px;">
         <div class="card-header">
           <h3>盈亏总览</h3>
-          <span style="font-size:12px;color:var(--text-light);">只统计已出库的单 · 按出库日期归周</span>
+          <span style="font-size:12px;color:var(--text-light);">只统计已出库的单 · 按出库日期归月</span>
         </div>
         <div class="card-body">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">
@@ -1627,9 +1627,9 @@ const TransactionsModule = {
             <button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-top:2px;" onclick="TransactionsModule._showInvestDetail()" title="每一单的下单设备 / 采购本金 / 收益 / 盈亏 / 出库日期，点进去还能按下单设备拆分">查看明细 ›</button>
           </div>
           <div style="margin-top:18px;">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">每周盈亏走势</div>
-            ${this._renderPnlChart(dash.weekly || [])}
-            <div style="font-size:11px;color:var(--text-light);margin-top:6px;">柱：当周盈亏（红＝盈利 / 绿＝亏损）　金色折线：累计盈亏</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">每月盈亏走势</div>
+            ${this._renderPnlChart(dash.monthly || dash.weekly || [])}
+            <div style="font-size:11px;color:var(--text-light);margin-top:6px;">柱：当月盈亏（红＝盈利 / 绿＝亏损）　金色折线：累计盈亏</div>
           </div>
         </div>
       </div>
@@ -2060,12 +2060,18 @@ const TransactionsModule = {
     `;
   },
 
-  // 手绘 SVG 图表：柱=当周盈亏，折线=累计盈亏（不依赖任何图表库，离线也能用）
-  _renderPnlChart(weekly) {
-    const n = weekly.length;
+  // 手绘 SVG 图表：柱=当期盈亏，折线=累计盈亏（不依赖任何图表库，离线也能用）
+  // rows 支持两种数据：每月（{ month_start: '2026-09' }）或每周（{ week_start: '2026-09-21' }）
+  _renderPnlChart(rows) {
+    const list = Array.isArray(rows) ? rows : [];
+    const n = list.length;
     if (n === 0) {
-      return '<div style="padding:26px;text-align:center;color:var(--text-light);font-size:12px;">还没有出库记录 —— 有商品出库后，这里会按周显示盈亏走势</div>';
+      return '<div style="padding:26px;text-align:center;color:var(--text-light);font-size:12px;">还没有出库记录 —— 有商品出库后，这里会按月显示盈亏走势</div>';
     }
+    // 横轴标签：月数据显示「9月」，周数据显示「09-21」
+    const labelOf = r => r.month_start
+      ? Number(String(r.month_start).slice(5, 7)) + '月'
+      : String(r.week_start || '').slice(5);
 
     const W = 720, H = 250;
     const padL = 64, padR = 14, padT = 16, padB = 30;
@@ -2073,7 +2079,7 @@ const TransactionsModule = {
     const plotH = H - padT - padB;
 
     const vals = [];
-    weekly.forEach(w => { vals.push(Number(w.profit) || 0); vals.push(Number(w.cumulative) || 0); });
+    list.forEach(w => { vals.push(Number(w.profit) || 0); vals.push(Number(w.cumulative) || 0); });
     let mn = Math.min(0, ...vals);
     let mx = Math.max(0, ...vals);
     if (mn === mx) { mn -= 10; mx += 10; }
@@ -2103,7 +2109,7 @@ const TransactionsModule = {
 
     let bars = '', xLabels = '', dots = '';
     const pts = [];
-    weekly.forEach((w, i) => {
+    list.forEach((w, i) => {
       const p = Number(w.profit) || 0;
       const cum = Number(w.cumulative) || 0;
       const x = xOf(i);
@@ -2118,7 +2124,7 @@ const TransactionsModule = {
         bars += `<text x="${x.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" font-size="11" fill="#9ca3af">${lab}</text>`;
       }
       if (i % labelStep === 0 || i === n - 1) {
-        xLabels += `<text x="${x.toFixed(1)}" y="${padT + plotH + 18}" text-anchor="middle" font-size="11" fill="#6b7280">${String(w.week_start).slice(5)}</text>`;
+        xLabels += `<text x="${x.toFixed(1)}" y="${padT + plotH + 18}" text-anchor="middle" font-size="11" fill="#6b7280">${labelOf(w)}</text>`;
       }
       const cy = yOf(cum);
       pts.push(`${x.toFixed(1)},${cy.toFixed(1)}`);
@@ -2170,7 +2176,7 @@ const TransactionsModule = {
 
       let html = '';
 
-      // ====== 盈亏仪表盘（只统计已出库的单，按出库日期归周）======
+      // ====== 盈亏仪表盘（只统计已出库的单，按出库日期归月）======
       let dash = null;
       if (this._dashData && this._dashSystem === system) {
         dash = this._dashData;
