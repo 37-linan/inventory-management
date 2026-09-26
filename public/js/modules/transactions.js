@@ -1603,7 +1603,7 @@ const TransactionsModule = {
       <div class="card" style="margin-bottom:12px;">
         <div class="card-header">
           <h3>盈亏总览</h3>
-          <span style="font-size:12px;color:var(--text-light);">只统计已出库的单 · 近一个月按天</span>
+          <span style="font-size:12px;color:var(--text-light);">只统计已出库的单 · 近一个月里有盈亏的日子</span>
         </div>
         <div class="card-body">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">
@@ -1629,7 +1629,7 @@ const TransactionsModule = {
           <div style="margin-top:18px;">
             <div style="font-size:13px;font-weight:600;margin-bottom:8px;">近一个月盈亏走势<span style="font-weight:400;font-size:11px;color:var(--text-light);margin-left:6px;">${dash.daily_start ? `${String(dash.daily_start).slice(5)} ~ ${String(dash.daily_end).slice(5)} · 按天` : ''}</span></div>
             ${this._renderPnlChart(dash.daily || dash.monthly || dash.weekly || [])}
-            <div style="font-size:11px;color:var(--text-light);margin-top:6px;">柱：当天盈亏（红＝盈利 / 绿＝亏损；没单的日子不画柱）　金色折线：这段时间的累计盈亏</div>
+            <div style="font-size:11px;color:var(--text-light);margin-top:6px;">柱：当天盈亏（红＝盈利 / 绿＝亏损；只标出「有盈亏的那几天」，横轴日期就是几号）　金色折线：这段时间的累计盈亏</div>
           </div>
         </div>
       </div>
@@ -2063,13 +2063,16 @@ const TransactionsModule = {
   // 手绘 SVG 图表：柱=当期盈亏，折线=累计盈亏（不依赖任何图表库，离线也能用）
   // rows 支持两种数据：每月（{ month_start: '2026-09' }）或每周（{ week_start: '2026-09-21' }）
   _renderPnlChart(rows) {
-    const list = Array.isArray(rows) ? rows : [];
-    const n = list.length;
-    if (n === 0) {
+    const allRows = Array.isArray(rows) ? rows : [];
+    if (allRows.length === 0) {
       return '<div style="padding:26px;text-align:center;color:var(--text-light);font-size:12px;">还没有出库记录 —— 有商品出库后，这里会按天显示近一个月的盈亏走势</div>';
     }
-    // 逐日视图：窗口内一天生意都没有 → 空态
-    if (list[0] && list[0].date && !list.some(r => (Number(r.orders) || 0) > 0)) {
+    // 逐日视图：只保留「那天真出了单」的日子 —— 没生意的日期压根不上轴，
+    // 所以横轴上出现的每一天，就是这一天有盈亏、日期是几号
+    const isDaily = !!(allRows[0] && allRows[0].date);
+    const list = isDaily ? allRows.filter(r => (Number(r.orders) || 0) > 0) : allRows;
+    const n = list.length;
+    if (n === 0) {
       return '<div style="padding:26px;text-align:center;color:var(--text-light);font-size:12px;">最近一个月还没有出库记录</div>';
     }
     // 横轴标签：逐日数据显示「09-27」，月数据显示「9月」，周数据显示「09-21」
@@ -2104,7 +2107,8 @@ const TransactionsModule = {
     const slot = plotW / n;
     const barW = Math.max(12, Math.min(44, slot * 0.42));
     const xOf = i => padL + slot * (i + 0.5);
-    const labelStep = Math.ceil(n / 12);
+    // 逐日视图：柱子够宽就每天都标日期（一眼看清是几号），挤的时候才抽稀
+    const labelStep = isDaily ? Math.max(1, Math.ceil(26 / slot)) : Math.ceil(n / 12);
 
     let grid = '', yLabels = '';
     for (let v = lo; v <= hi + 1e-9; v += step) {
