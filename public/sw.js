@@ -1,5 +1,5 @@
 // Service Worker - PWA离线支持
-const CACHE_NAME = 'inventory-cache-v42';
+const CACHE_NAME = 'inventory-cache-v43';
 const CACHE_URLS = [
   '/',
   '/css/style.css',

@@ -1603,7 +1603,7 @@ const TransactionsModule = {
       <div class="card" style="margin-bottom:12px;">
         <div class="card-header">
           <h3>盈亏总览</h3>
-          <span style="font-size:12px;color:var(--text-light);">只统计已出库的单 · 按出库日期归月</span>
+          <span style="font-size:12px;color:var(--text-light);">只统计已出库的单 · 近一个月按天</span>
         </div>
         <div class="card-body">
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">
@@ -1627,9 +1627,9 @@ const TransactionsModule = {
             <button class="btn btn-secondary btn-sm" style="white-space:nowrap;margin-top:2px;" onclick="TransactionsModule._showInvestDetail()" title="每一单的下单设备 / 采购本金 / 收益 / 盈亏 / 出库日期，点进去还能按下单设备拆分">查看明细 ›</button>
           </div>
           <div style="margin-top:18px;">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">每月盈亏走势</div>
-            ${this._renderPnlChart(dash.monthly || dash.weekly || [])}
-            <div style="font-size:11px;color:var(--text-light);margin-top:6px;">柱：当月盈亏（红＝盈利 / 绿＝亏损）　金色折线：累计盈亏</div>
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;">近一个月盈亏走势<span style="font-weight:400;font-size:11px;color:var(--text-light);margin-left:6px;">${dash.daily_start ? `${String(dash.daily_start).slice(5)} ~ ${String(dash.daily_end).slice(5)} · 按天` : ''}</span></div>
+            ${this._renderPnlChart(dash.daily || dash.monthly || dash.weekly || [])}
+            <div style="font-size:11px;color:var(--text-light);margin-top:6px;">柱：当天盈亏（红＝盈利 / 绿＝亏损；没单的日子不画柱）　金色折线：这段时间的累计盈亏</div>
           </div>
         </div>
       </div>
@@ -2066,12 +2066,18 @@ const TransactionsModule = {
     const list = Array.isArray(rows) ? rows : [];
     const n = list.length;
     if (n === 0) {
-      return '<div style="padding:26px;text-align:center;color:var(--text-light);font-size:12px;">还没有出库记录 —— 有商品出库后，这里会按月显示盈亏走势</div>';
+      return '<div style="padding:26px;text-align:center;color:var(--text-light);font-size:12px;">还没有出库记录 —— 有商品出库后，这里会按天显示近一个月的盈亏走势</div>';
     }
-    // 横轴标签：月数据显示「9月」，周数据显示「09-21」
-    const labelOf = r => r.month_start
-      ? Number(String(r.month_start).slice(5, 7)) + '月'
-      : String(r.week_start || '').slice(5);
+    // 逐日视图：窗口内一天生意都没有 → 空态
+    if (list[0] && list[0].date && !list.some(r => (Number(r.orders) || 0) > 0)) {
+      return '<div style="padding:26px;text-align:center;color:var(--text-light);font-size:12px;">最近一个月还没有出库记录</div>';
+    }
+    // 横轴标签：逐日数据显示「09-27」，月数据显示「9月」，周数据显示「09-21」
+    const labelOf = r => r.date
+      ? String(r.date).slice(5)
+      : r.month_start
+        ? Number(String(r.month_start).slice(5, 7)) + '月'
+        : String(r.week_start || '').slice(5);
 
     const W = 720, H = 250;
     const padL = 64, padR = 14, padT = 16, padB = 30;
@@ -2116,12 +2122,18 @@ const TransactionsModule = {
       const y1 = yOf(p);
       const top = Math.min(zeroY, y1);
       const h = Math.max(1.5, Math.abs(y1 - zeroY));
-      bars += `<rect x="${(x - barW / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${p >= 0 ? '#e57373' : '#81c784'}"/>`;
+      // 逐日视图：这天没单就不画柱子（柱子的有无 = 这天有没有生意）
+      const hasTrade = w.date ? (Number(w.orders) || 0) > 0 : true;
+      if (hasTrade) {
+        const sign = p < 0 ? '-' : '+';
+        const tip = w.date ? `${String(w.date).slice(5)}：${sign}¥${Math.abs(p).toFixed(2)}（${w.orders} 单）` : '';
+        bars += `<rect x="${(x - barW / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${p >= 0 ? '#e57373' : '#81c784'}">${tip ? `<title>${tip}</title>` : ''}</rect>`;
 
-      if (slot >= 34) {
-        const lab = (p < 0 ? '-' : '+') + Math.abs(p).toFixed(0);
-        const ly = p >= 0 ? top - 5 : top + h + 13;
-        bars += `<text x="${x.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" font-size="11" fill="#9ca3af">${lab}</text>`;
+        if (slot >= 34) {
+          const lab = sign + Math.abs(p).toFixed(0);
+          const ly = p >= 0 ? top - 5 : top + h + 13;
+          bars += `<text x="${x.toFixed(1)}" y="${ly.toFixed(1)}" text-anchor="middle" font-size="11" fill="#9ca3af">${lab}</text>`;
+        }
       }
       if (i % labelStep === 0 || i === n - 1) {
         xLabels += `<text x="${x.toFixed(1)}" y="${padT + plotH + 18}" text-anchor="middle" font-size="11" fill="#6b7280">${labelOf(w)}</text>`;

@@ -1071,6 +1071,7 @@ module.exports = function(db) {
       let holdCount = 0, holdInvest = 0;         // 其中「档口寄存」的单：货已出库、但还没卖
       const weekMap = {};
       const monthMap = {};
+      const dayMap = {};     // 逐日（「近一个月」按天走势用）
       const devMap = {};
       const orderList = [];
 
@@ -1151,10 +1152,17 @@ module.exports = function(db) {
         const w = weekMap[wk] || (weekMap[wk] = { week_start: wk, profit: 0, revenue: 0, cost: 0, orders: 0 });
         w.profit += profit; w.revenue += sale; w.cost += cost; w.orders++;
 
-        // 归到自然月（按出库日期所属月份，用于「每月盈亏走势」）
+        // 归到自然月（按出库日期所属月份）
         const mk = String(lastDay || '1970-01').slice(0, 7);
         const m = monthMap[mk] || (monthMap[mk] = { month_start: mk, profit: 0, revenue: 0, cost: 0, orders: 0 });
         m.profit += profit; m.revenue += sale; m.cost += cost; m.orders++;
+
+        // 归到具体某天（用于「近一个月」按天走势：哪天有单就标在哪天）
+        const dk = String(lastDay || '').slice(0, 10);
+        if (dk) {
+          const dd = dayMap[dk] || (dayMap[dk] = { date: dk, profit: 0, revenue: 0, cost: 0, orders: 0 });
+          dd.profit += profit; dd.revenue += sale; dd.cost += cost; dd.orders++;
+        }
       });
 
       invest = Number(invest.toFixed(2));
@@ -1190,6 +1198,30 @@ module.exports = function(db) {
         };
       });
 
+      // 「近一个月」逐日：本地今天往前推一个自然月 → 今天，缺数据的日子补 0（横轴连续）
+      const tD = new Date(today + 'T00:00:00');
+      const sD = new Date(tD.getTime());
+      sD.setMonth(sD.getMonth() - 1);
+      if (sD.getDate() !== tD.getDate()) sD.setDate(0);   // 例如 3-31 往前一个月 → 2 月最后一天
+      const dailyStart = `${sD.getFullYear()}-${pad(sD.getMonth() + 1)}-${pad(sD.getDate())}`;
+      const daily = [];
+      let dacc = 0;
+      for (const cur = new Date(sD.getTime()); ; cur.setDate(cur.getDate() + 1)) {
+        const key = `${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`;
+        const rec = dayMap[key];
+        const dp = rec ? Number(rec.profit.toFixed(2)) : 0;
+        dacc = Number((dacc + dp).toFixed(2));
+        daily.push({
+          date: key,
+          profit: dp,
+          revenue: rec ? Number(rec.revenue.toFixed(2)) : 0,
+          cost: rec ? Number(rec.cost.toFixed(2)) : 0,
+          orders: rec ? rec.orders : 0,
+          cumulative: dacc
+        });
+        if (key >= today) break;
+      }
+
       // 按下单设备/下级汇总，投入降序
       const byDevice = Object.keys(devMap).map(k => {
         const d = devMap[k];
@@ -1221,6 +1253,9 @@ module.exports = function(db) {
         },
         weekly,
         monthly,
+        daily,
+        daily_start: dailyStart,
+        daily_end: today,
         by_device: byDevice,
         orders: orderList
       });
