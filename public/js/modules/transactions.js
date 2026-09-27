@@ -854,7 +854,7 @@ const TransactionsModule = {
                     ? '<span class="badge badge-stock-low" title="出库次日行情还没到，明天录价后自动重算">待次日行情</span>'
                     : (r.next_day_price > 0
                         ? (isBackfill
-                            ? '<span class="badge" style="background:#fff3e0;color:#b26a00;" title="出库次日那天没有录这个商品的行情，用了更早一次的价；想按次日算就点「改行情」补录">沿用价</span>'
+                            ? '<span class="badge" style="background:#fff3e0;color:#b26a00;" title="取价日＝出库次日。取价日当天没单独录这个商品的行情，就按「哪天没录就沿用前一天的价」沿用了更早录入的价；想单独录取价日的价，点「改行情」">沿用价</span>'
                             : '<span class="badge badge-stock-normal">已算</span>')
                         : '<span class="badge badge-stock-low">待行情</span>'))
                 : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>');
@@ -866,13 +866,11 @@ const TransactionsModule = {
                 <div style="font-size:11px;color:var(--text-secondary);">本单入库 ${r.in_qty}，本单已出 ${r.out_qty}</div>
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
-                ${r.out_date ? `<div>出库日：<strong>${r.out_date}</strong></div><div>次日：<strong>${r.next_day}</strong></div>` : '<span style="color:var(--text-light);">—</span>'}
+                ${r.out_date ? `<div>出库日：<strong>${r.out_date}</strong></div><div>取价日：<strong>${r.next_day}</strong><span style="font-size:10px;color:var(--text-light);">（次日）</span></div>` : '<span style="color:var(--text-light);">—</span>'}
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
                 ${r.next_day_price > 0
-                  ? `<div><strong>¥${r.next_day_price.toFixed(2)}</strong></div>${r.price_date && r.price_date !== r.next_day
-                      ? `<div style="font-size:10px;color:#b26a00;line-height:1.5;margin-top:2px;">次日 ${String(r.next_day).slice(5)} 没录<br>沿用 ${String(r.price_date).slice(5)} 的价</div>`
-                      : ''}`
+                  ? `<div><strong>¥${r.next_day_price.toFixed(2)}</strong></div><div style="font-size:10px;line-height:1.5;margin-top:2px;color:${r.price_date && r.price_date !== r.next_day ? '#b26a00' : 'var(--text-light)'};">取价日 ${String(r.next_day).slice(5)}${r.price_date && r.price_date !== r.next_day ? `<br>（取价日当天没单独录，沿用 ${String(r.price_date).slice(5)} 的价）` : ''}</div>`
                   : '<span style="color:var(--text-light);">—</span>'}
                 ${r.await_price ? `<div style="font-size:10px;color:#e65100;margin-top:3px;">${r.next_day} 录价后自动重算</div>` : ''}
                 ${r.out_qty > 0 ? `<button class="btn btn-sm ${r.next_day_price > 0 ? 'btn-secondary' : 'btn-primary'}" style="margin-top:5px;white-space:nowrap;" onclick="TransactionsModule._showBackfillPrice(${i})">${r.next_day_price > 0 ? '改行情' : '补录行情'}</button>` : ''}
@@ -898,6 +896,12 @@ const TransactionsModule = {
       else if (!res.has_market) summaryText = '<span style="color:var(--text-secondary);">出库次日行情未录，暂无法计算</span>';
       else summaryText = `<strong>销售 ${res.detail.filter(r => r.out_qty > 0 && !r.set_member).length} 项</strong> = ¥${sale.toFixed(2)}`;
 
+      // 「取价日」落点说明：哪些项的取价日当天没单独录、按「哪天没录就沿用前一天」沿用了更早的价
+      const carried = (res.detail || []).filter(r => r.out_qty > 0 && r.next_day_price > 0 && r.price_date && r.price_date !== r.next_day && !r.await_price);
+      const carryNote = carried.length
+        ? `<div style="margin-top:8px;padding:8px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;color:#8a6d00;line-height:1.6;">本单有 <strong>${carried.length}</strong> 项的<b>取价日当天没单独录行情</b>，按「哪天没录就沿用前一天的价」的规则沿用了更早录入的价：${carried.map(r => `取价日 ${String(r.next_day).slice(5)} ← 沿用 ${String(r.price_date).slice(5)}（¥${(r.next_day_price || 0).toFixed(2)}）`).join('；')}。想改成取价日那天的价，点对应行的「改行情」单独补录即可。</div>`
+        : '';
+
       document.getElementById('modal-body').innerHTML = `
         <div style="padding:4px 0;">
           <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);">
@@ -910,6 +914,7 @@ const TransactionsModule = {
                   ? '<strong style="color:#e65100;font-size:16px;">寄存中（未卖出）</strong>'
                   : '<strong style="color:var(--text-secondary);font-size:16px;">待整单出库</strong>')}</div>
             ${res.await_price ? `<div style="margin-top:8px;padding:8px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;color:#8a6d00;line-height:1.6;">本单有 <strong>${res.await_count}</strong> 项是<b>今天出库</b>，出库次日（<strong>${res.await_date}</strong>）的行情还没到，上面的销售和利润是先用最近一次的价（${res.detail.filter(r => r.await_price && r.price_date).map(r => r.price_date).join('、')}）<strong>暂计</strong>。明天录入 ${res.await_date} 的价后会自动重算，不用手动改。</div>` : ''}
+            ${carryNote}
           </div>
           <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">各商品计算明细：</div>
           <div style="overflow-x:auto;">
@@ -927,7 +932,8 @@ const TransactionsModule = {
             </table>
           </div>
           <p style="margin-top:12px;padding:10px;background:rgba(26,115,232,0.06);border-left:3px solid var(--primary);font-size:12px;color:var(--text-secondary);line-height:1.6;">
-            <strong>计算规则：</strong>成本 = 整单金额（首个商品填的金额）；销售 = 各商品「出库日次日」录的行情价 × 该商品在本单内的全部数量；利润 = 销售 - 成本。<br>
+            <strong>计算规则：</strong>成本 = 整单金额（首个商品填的金额）；销售 = 各商品<b>取价日</b>当天的行情价 × 该商品在本单内的全部数量；利润 = 销售 - 成本。<br>
+            <strong>取价日：</strong>＝ <b>出库日的次日</b>。哪天没单独录这个商品的行情，就按「<b>哪天没录就沿用前一天的价</b>」往前沿用 —— 所以取价日仍是出库次日，只是这个价来自更早录入的那一次（明细里会标出沿用自哪天）。<br>
             <strong>怎么算「已出库」：</strong>按同一物品编码的入库时间<b>先进先出</b>——出库量从最早入库的那批开始扣，扣到了本单这批才算本单已出库（因为出库记录里没登记属于哪一张入库单）。<br>
             ${res.hold_sold ? `<strong>寄存计价：</strong>这一单是<b>档口寄存</b>后卖出的，寄存在档口的商品按<b>卖出日 ${res.hold_sold}</b> 的行情价计算（没寄存的商品仍按出库日）。` : ''}
           </p>
@@ -965,14 +971,14 @@ const TransactionsModule = {
         <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:14px;font-size:12px;color:var(--text-secondary);line-height:1.8;">
           <div style="font-size:13px;font-weight:600;color:var(--text);">${r.name || r.code}</div>
           <div><code style="font-size:11px;">${r.code}</code></div>
-          <div>出库日：<strong>${outDate || '-'}</strong>　次日：<strong>${nextDayStr || '-'}</strong></div>
+          <div>出库日：<strong>${outDate || '-'}</strong>　取价日：<strong>${nextDayStr || '-'}</strong><span style="font-size:11px;color:var(--text-light);">（次日）</span></div>
         </div>
         <div class="form-group" style="margin-bottom:12px;">
           <label>行情日期</label>
           <input type="date" id="bf-price-date" value="${nextDayStr || outDate || todayStr}" min="${minDate}" max="${maxDate}" style="width:100%;padding:10px;font-size:16px;" />
           <div style="font-size:11px;color:var(--text-light);margin-top:6px;line-height:1.7;">
-            <strong style="color:#b26a00;">销售额取的是「出库次日」那天的行情</strong>，所以这里默认填 <strong>${nextDayStr || '次日'}</strong>${nextDayStr ? '（出库日 ' + (outDate || '-') + ' 的次日）' : ''}；<br>
-            只有次日没有记录时，系统才会退回去用 ${outDate || '出库日'} 或更早的价兜底。
+            <strong style="color:#b26a00;">销售额取的是「取价日」＝「出库次日」那天的行情</strong>，所以这里默认填 <strong>${nextDayStr || '次日'}</strong>${nextDayStr ? '（出库日 ' + (outDate || '-') + ' 的次日）' : ''}；<br>
+            那天<b>没单独录</b>的话，系统按「<b>哪天没录就沿用前一天的价</b>」往前沿用（<b>不会往后找</b>）。想让这一单按取价日当天的价算，就把当天的价补在这里。
           </div>
         </div>
         <div class="form-group" style="margin-bottom:16px;">
@@ -2309,7 +2315,7 @@ const TransactionsModule = {
                       <td style="text-align:center;">${showBq && bq > 1 ? '<span style="color:#fbbc04;font-weight:500;">×' + bq + '</span>' : '<span style="color:#bbb;">-</span>'}</td>
                       <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
                       <td>${r.location || '-'}</td>
-                      <td title="${r.hold_status === 'holding' ? '这单发到档口寄存、还没卖，先不计销售额' : (r.price_date ? '行情取自 ' + r.price_date : '')}">${r.hold_status === 'holding' ? '<span class="badge" style="background:#fff8e1;color:#e65100;">寄存中</span>' : (r.set_member ? '<span style="color:var(--text-light);" title="同一套装只在代表行记一次整套销售额">并入套装</span>' : (r.sale_price ? '¥' + r.sale_price : '-'))}</td>
+                      <td title="${r.hold_status === 'holding' ? '这单发到档口寄存、还没卖，先不计销售额' : (r.price_date ? ('取价日 ' + (r.price_day || r.price_date) + (r.price_day && r.price_date !== r.price_day ? '（当天没单独录，沿用 ' + r.price_date + ' 录入的价）' : '')) : '')}">${r.hold_status === 'holding' ? '<span class="badge" style="background:#fff8e1;color:#e65100;">寄存中</span>' : (r.set_member ? '<span style="color:var(--text-light);" title="同一套装只在代表行记一次整套销售额">并入套装</span>' : (r.sale_price ? '¥' + r.sale_price : '-'))}</td>
                       <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule._deleteLedgerRecord('${sys}','outbound',${r.id})">删除</button></td>
                     </tr>`;
                     }).join('')}

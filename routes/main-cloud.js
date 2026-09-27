@@ -54,7 +54,11 @@ async function computeOutboundAlloc(db) {
 // 全部行情价：{ code: [{d:'YYYY-MM-DD', p:Number}...] }（按日期升序）
 async function loadPriceMap(db) {
   const prRes = await db.query(
-    "SELECT product_code, to_char(date,'YYYY-MM-DD') AS d, price FROM main_price_history ORDER BY product_code ASC, date ASC"
+    // ❗排序必须「日期升序 + 同一天按录入时间升序」：同一天可能被录入多次（改价），
+    //   取价时统一取「同一天最后录入的那条」（最新的才是生效价）。否则同日多行的返回
+    //   顺序由 PG 自己决定，而 pickMarketPrice 里「找次日用 find（取首条）、往前回退用
+    //   遍历（取末条）」会取到不同的行 → 同一天多录一次，取价结果就不确定了。
+    "SELECT product_code, to_char(date,'YYYY-MM-DD') AS d, price FROM main_price_history ORDER BY product_code ASC, date ASC, created_at ASC, id ASC"
   );
   const map = {};
   prRes.rows.forEach(p => {
@@ -78,15 +82,25 @@ async function todayOf(db) {
 
 // 行情价：① 出库日次日(D+1)优先 ② 次日没录 → 出库日当天/之前最近一天（不往后找）
 // 返回 { price, date, fromNextDay } 或 null
+// 语义说明（和用户对齐过的规则）：
+//   用户规则 = 「哪天没录行情，就沿用前一天的价格」→ 某天的有效价 = 往前找最近一次录入的价。
+//   出库的取价日恒为「出库日次日」(D+1)；D+1 那天没单独录，就沿用它之前最近一次录入的价。
+//   所以：`date` 是「价实际来自行情表的哪一天」，而 D+1（逻辑取价日）由调用方用
+//   nextDayOf(outDay) 给出 —— 明细里应当把「取价日 = D+1」作为主口径展示，
+//   「沿用自哪天」只作附注，避免看着像"系统取了出库当天的价"。
+// list 已按「日期升序、同日按录入时间升序」排好 → 同一天的最后一条就是最新生效价。
 function pickMarketPrice(priceMap, code, outDay) {
   if (!outDay) return null;
   const list = priceMap[code] || [];
   if (list.length === 0) return null;
   const nd = nextDayOf(outDay);
-  const hit = list.find(x => x.d === nd);
-  if (hit) return { price: hit.p, date: hit.d, fromNextDay: true };
-  let before = null;
-  for (const x of list) { if (x.d <= outDay) before = x; else break; }
+  let hit = null, before = null;
+  for (const x of list) {
+    if (x.d === nd) hit = x;              // 次日有录 → 用次日（同日多行取最后一条）
+    else if (x.d < nd) before = x;        // x.d <= outDay：往前回退，取最近一次
+    else break;                           // x.d > nd：之后录的价不参与（不往后找）
+  }
+  if (hit) return { price: hit.p, date: nd, fromNextDay: true };
   return before ? { price: before.p, date: before.d, fromNextDay: false } : null;
 }
 
@@ -959,9 +973,10 @@ module.exports = function(db) {
             // 明天录了次日价会自动改用次日价重算，前端提示「待次日行情」
             await_price: false
           };
-          const priceDay = priceDayOf(x.code, x.outDate);   // 寄存已卖出 → 按卖出日取价
-          row.price_day = priceDay;
+          const priceDay = priceDayOf(x.code, x.outDate);   // 基准日：寄存已卖出 → 卖出日；否则出库日
+          row.base_day = priceDay;                          // 基准日（出库日 / 卖出日）
           row.next_day = priceDay ? nextDayOf(priceDay) : '';
+          row.price_day = row.next_day;                     // ❗取价日 = 基准日次日（与 /ledger 的 price_day 同义，别写成基准日）
           row.await_price = !!(x.outQty > 0 && row.next_day && row.next_day > today);
 
           if (x.outQty > 0) {
@@ -995,7 +1010,8 @@ module.exports = function(db) {
             in_qty: x.inQty, out_qty: x.outQty,
             out_date: i === 0 ? (x.outDate || groupOutDate) : x.outDate,
             next_day: setDay ? nextDayOf(setDay) : '',
-            price_day: setDay,
+            base_day: setDay,
+            price_day: setDay ? nextDayOf(setDay) : '',
             price_date: mp ? mp.date : '',
             next_day_price: salePrice,
             // 销售额只记在「代表行」（组内第一条）上，其余组成商品不再单独计价
@@ -1585,6 +1601,7 @@ module.exports = function(db) {
           ob.sale_price = 0;
           ob.profit = 0;
           ob.price_date = '';
+          ob.price_day = '';
           continue;
         }
 
@@ -1595,6 +1612,7 @@ module.exports = function(db) {
           ob.sale_price = 0;
           ob.profit = 0;              // 组成商品不单独看盈亏，免得被显示成"亏损"
           ob.price_date = '';
+          ob.price_day = '';
           continue;
         }
 
@@ -1607,7 +1625,8 @@ module.exports = function(db) {
         const totalSale = salePrice * units;
         ob.sale_price = Number(totalSale.toFixed(2));   // 整单销售额
         ob.profit = Number((totalSale - totalCost).toFixed(2));
-        ob.price_date = mp ? mp.date : '';              // 行情价实际取自哪一天
+        ob.price_date = mp ? mp.date : '';              // 价实际来自行情表的哪一天（沿用时有可能是更早的天）
+        ob.price_day = nextDayOf(outDate);              // 逻辑取价日 = 出库次日（对外口径按这个显示）
         if (ob.is_set) ob.set_units = units;
       }
 
