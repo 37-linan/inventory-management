@@ -844,12 +844,19 @@ const TransactionsModule = {
             : (r.out_qty > 0
                 ? `¥${(r.next_day_price || 0).toFixed(2)} × ${r.is_set ? this._fmtQty(r.set_units || 0) + '（套数）' : r.in_qty + '（本单内数量）'} = <strong>¥${r.sale.toFixed(2)}</strong>`
                 : '<span style="color:var(--text-light);">未出库，无销售</span>');
+          // 「沿用价」：出库次日那一天没有这个商品的行情，系统退用了更早一次的价
+          // （图表上缺失日会沿用补线，所以图和这里必须都是"沿用"的语义，否则对不上）
+          const isBackfill = !!(r.next_day_price > 0 && r.price_date && r.price_date !== r.next_day && r.out_qty > 0);
           const statusBadge = r.set_member
             ? '<span class="badge" style="background:#ede7f6;color:#5e35b1;">套装组成</span>'
             : (r.out_qty > 0
                 ? (r.await_price
                     ? '<span class="badge badge-stock-low" title="出库次日行情还没到，明天录价后自动重算">待次日行情</span>'
-                    : (r.next_day_price > 0 ? '<span class="badge badge-stock-normal">已算</span>' : '<span class="badge badge-stock-low">待行情</span>'))
+                    : (r.next_day_price > 0
+                        ? (isBackfill
+                            ? '<span class="badge" style="background:#fff3e0;color:#b26a00;" title="出库次日那天没有录这个商品的行情，用了更早一次的价；想按次日算就点「改行情」补录">沿用价</span>'
+                            : '<span class="badge badge-stock-normal">已算</span>')
+                        : '<span class="badge badge-stock-low">待行情</span>'))
                 : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>');
           return `
             <tr style="border-bottom:1px solid var(--border);">
@@ -863,7 +870,9 @@ const TransactionsModule = {
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
                 ${r.next_day_price > 0
-                  ? `<div><strong>¥${r.next_day_price.toFixed(2)}</strong></div>${r.price_date && r.price_date !== r.next_day ? `<div style="font-size:10px;color:var(--text-light);">取自 ${r.price_date}</div>` : ''}`
+                  ? `<div><strong>¥${r.next_day_price.toFixed(2)}</strong></div>${r.price_date && r.price_date !== r.next_day
+                      ? `<div style="font-size:10px;color:#b26a00;line-height:1.5;margin-top:2px;">次日 ${String(r.next_day).slice(5)} 没录<br>沿用 ${String(r.price_date).slice(5)} 的价</div>`
+                      : ''}`
                   : '<span style="color:var(--text-light);">—</span>'}
                 ${r.await_price ? `<div style="font-size:10px;color:#e65100;margin-top:3px;">${r.next_day} 录价后自动重算</div>` : ''}
                 ${r.out_qty > 0 ? `<button class="btn btn-sm ${r.next_day_price > 0 ? 'btn-secondary' : 'btn-primary'}" style="margin-top:5px;white-space:nowrap;" onclick="TransactionsModule._showBackfillPrice(${i})">${r.next_day_price > 0 ? '改行情' : '补录行情'}</button>` : ''}
@@ -960,10 +969,10 @@ const TransactionsModule = {
         </div>
         <div class="form-group" style="margin-bottom:12px;">
           <label>行情日期</label>
-          <input type="date" id="bf-price-date" value="${outDate || todayStr}" min="${minDate}" max="${maxDate}" style="width:100%;padding:10px;font-size:16px;" />
+          <input type="date" id="bf-price-date" value="${nextDayStr || outDate || todayStr}" min="${minDate}" max="${maxDate}" style="width:100%;padding:10px;font-size:16px;" />
           <div style="font-size:11px;color:var(--text-light);margin-top:6px;line-height:1.7;">
-            填 <strong>${outDate || '出库日'}</strong> 即可，系统会拿它当出库当天的价；<br>
-            如果你记得次日 ${nextDayStr ? '<strong>' + nextDayStr + '</strong>' : ''} 的价，也可以把日期改成次日 —— 次日价优先。
+            <strong style="color:#b26a00;">销售额取的是「出库次日」那天的行情</strong>，所以这里默认填 <strong>${nextDayStr || '次日'}</strong>${nextDayStr ? '（出库日 ' + (outDate || '-') + ' 的次日）' : ''}；<br>
+            只有次日没有记录时，系统才会退回去用 ${outDate || '出库日'} 或更早的价兜底。
           </div>
         </div>
         <div class="form-group" style="margin-bottom:16px;">
