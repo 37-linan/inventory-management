@@ -17,6 +17,16 @@ const TransactionsModule = {
     { val: '#fce4ec', label: '粉色', bg: '#fce4ec', border: '#f48fb1' },
   ],
 
+  // ===== 上级分组（只影响「按下单设备/下级 · 投入」这一个弹窗的显示）=====
+  // 把入库时填的「下单设备/下级」里的若干个值，汇总成上一层（一个人/一组），看这一层的总成本、总盈亏。
+  // ❗只在这个弹窗里汇总：入库台账、单利润明细、按月拆分、筛选下拉等地方，仍按原来填的设备名（1 / 2 / 3）区分。
+  // 改法：改 name（这一层显示的名字）和 devices（要汇总进来的设备名，要跟入库时填的一模一样）。
+  // 可以配多个层级；没写在这里的设备照旧单独一行显示。
+  // 例：{ name: '张三', devices: ['4', '5'] },
+  DEVICE_GROUPS: [
+    { name: '李楠', devices: ['1', '2', '3'] },
+  ],
+
   // 入库表「单号组」的折叠状态，key = 订单号（无单号的用「（无单号）」）
   // ❗ 必须记在状态里而不是只看 DOM：设颜色/行内编辑/删除后表格会整块重绘，
   //    DOM 上的 display:none 会全部丢失 → 之前收起来的组全部弹开（2026-09-18 修复）
@@ -1754,19 +1764,62 @@ const TransactionsModule = {
       });
       devices = Object.values(m).sort((a, b) => b.invest - a.invest);
     }
-    this._devList = devices;   // 供点击行时按下标取用（避免把设备名拼进 onclick）
+    this._devList = devices;   // 原始设备/下级（点某个设备看它下面的单时按名字取用）
 
-    const rows = devices.map((d, i) => {
-      const pnl = Number(d.profit) || 0;
+    // ---- 上一层：按 DEVICE_GROUPS 把配置好的设备/下级汇总成一行「上级」----
+    // ❗只在这个弹窗里汇总；入库台账、单利润明细、按月拆分、筛选下拉等地方仍按原设备名区分
+    const addUp = (arr, key) => arr.reduce((s, x) => s + (Number(x[key]) || 0), 0);
+    const byName = {};
+    devices.forEach(d => { byName[String(d.device).trim()] = d; });
+
+    const usedNames = new Set();
+    this._devGroupRows = [];   // 上级行（点它时按下标取，避免把名字拼进 onclick）
+    const showRows = [];       // 最终渲染的行：上级行 + 未归组的设备行，最后按投入降序统一排
+
+    (this.DEVICE_GROUPS || []).forEach(g => {
+      const members = (g.devices || []).map(n => byName[String(n).trim()]).filter(Boolean);
+      if (!members.length) return;    // 这几个设备/下级还没出过库 → 这一层暂不出现
+      members.forEach(m => usedNames.add(String(m.device).trim()));
+      const row = {
+        isGroup: true,
+        name: g.name || '（未命名）',
+        badge: members.map(m => m.device).join(' · '),
+        members,
+        invest: addUp(members, 'invest'), revenue: addUp(members, 'revenue'),
+        profit: addUp(members, 'profit'), orders: addUp(members, 'orders'),
+      };
+      this._devGroupRows.push(row);
+      showRows.push({ row, groupIdx: this._devGroupRows.length - 1 });
+    });
+
+    devices.forEach(d => {
+      if (usedNames.has(String(d.device).trim())) return;   // 已并入上一层的，不再单独出现
+      showRows.push({ row: Object.assign({ isGroup: false, name: d.device }, d), groupIdx: -1 });
+    });
+
+    showRows.sort((a, b) => (Number(b.row.invest) || 0) - (Number(a.row.invest) || 0));
+    this._devRows = showRows;
+
+    const groupNote = this._devGroupRows.length
+      ? `<div style="font-size:11px;color:var(--text-light);margin-top:6px;">「${this._devGroupRows.map(g => this._escHtml(g.name)).join('、')}」是上级汇总，只在<b>本弹窗</b>显示；其它地方（入库台账、单利润、按月拆分等）仍按入库时填的设备名区分。</div>`
+      : '';
+
+    const rows = showRows.map((sr, i) => {
+      const r = sr.row;
+      const pnl = Number(r.profit) || 0;
       const color = pnl >= 0 ? '#c62828' : '#2e7d32';
-      return `<tr style="cursor:pointer;" onclick="TransactionsModule._showDeviceOrders(${i})" title="点击查看这个设备/下级下面的单">
-        <td style="font-size:12px;font-weight:500;">${d.device}</td>
-        <td style="text-align:right;font-weight:600;">${this._fmtMoney(d.invest)}</td>
-        <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(d.revenue)}</td>
+      const nameHtml = r.isGroup
+        ? `<span style="font-weight:700;color:var(--primary);">${this._escHtml(r.name)}</span><span class="badge" style="margin-left:6px;font-size:10px;font-weight:400;background:var(--bg);border:1px solid var(--border);color:var(--text-secondary);white-space:nowrap;" title="由这些设备/下级汇总而来">${this._escHtml(r.badge)}</span>`
+        : this._escHtml(r.name);
+      const clickFn = r.isGroup ? `_showDeviceGroup(${i})` : `_showDeviceOrders(${i})`;
+      return `<tr style="cursor:pointer;" onclick="TransactionsModule.${clickFn}" title="${r.isGroup ? '点击展开，看这一级下面各个设备/下级' : '点击查看这个设备/下级下面的单'}">
+        <td style="font-size:12px;font-weight:500;">${nameHtml}</td>
+        <td style="text-align:right;font-weight:600;">${this._fmtMoney(r.invest)}</td>
+        <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(r.revenue)}</td>
         <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
-        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._rateTxt(pnl, d.invest)}</td>
-        <td style="text-align:center;color:var(--text-secondary);">${d.orders}</td>
-        <td style="text-align:center;color:var(--primary);font-size:12px;white-space:nowrap;">明细 ›</td>
+        <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._rateTxt(pnl, r.invest)}</td>
+        <td style="text-align:center;color:var(--text-secondary);">${r.orders}</td>
+        <td style="text-align:center;color:var(--primary);font-size:12px;white-space:nowrap;">${r.isGroup ? '展开 ›' : '明细 ›'}</td>
       </tr>`;
     }).join('');
 
@@ -1779,7 +1832,7 @@ const TransactionsModule = {
     document.getElementById('modal-body-2').innerHTML = `
       <div style="padding:4px 0 12px;">
         <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">
-          已出库 ${orders.length} 单，按入库时填的「下单设备/下级」拆分。点某一行可看它下面的单。
+          已出库 ${orders.length} 单，按入库时填的「下单设备/下级」拆分。点某一行可看它下面的单${this._devGroupRows.length ? '；带徽章的那一行是<b>上级汇总</b>，点它能展开看到下面各个设备/下级' : ''}。
         </div>
         <div class="table-wrapper" style="max-height:56vh;overflow:auto;">
           <table>
@@ -1809,6 +1862,7 @@ const TransactionsModule = {
           </table>
         </div>
         <div style="font-size:11px;color:var(--text-light);margin-top:10px;">只统计已出库的单；未出库的单（含它所属的设备/下级）暂不出现，出库后自动进榜。</div>
+        ${groupNote}
         <div style="margin-top:14px;text-align:right;">
           <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
         </div>
@@ -1816,12 +1870,96 @@ const TransactionsModule = {
     `;
   },
 
-  // 第二层弹窗里点某个设备/下级 → 看它下面的单
+  // 点「上级汇总」那一行 → 展开这一层下面每个设备/下级的成本、盈亏（再点某一个才看它下面的单）
+  _showDeviceGroup(idx) {
+    const g = (this._devGroupRows || [])[idx];
+    if (!g) return;
+    const members = g.members || [];
+    const pnl = Number(g.profit) || 0;
+    const color = pnl >= 0 ? '#c62828' : '#2e7d32';
+
+    const rows = members.map((m, i) => {
+      const p = Number(m.profit) || 0;
+      const c = p >= 0 ? '#c62828' : '#2e7d32';
+      return `<tr style="cursor:pointer;" onclick="TransactionsModule._showGroupMemberOrders(${idx},${i})" title="点击查看这个设备/下级下面的单">
+        <td style="font-size:12px;font-weight:500;">${this._escHtml(m.device)}</td>
+        <td style="text-align:right;font-weight:600;">${this._fmtMoney(m.invest)}</td>
+        <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(m.revenue)}</td>
+        <td style="text-align:right;color:${c};font-weight:600;">${this._fmtMoney(p)}</td>
+        <td style="text-align:right;color:${c};font-weight:600;white-space:nowrap;">${this._rateTxt(p, m.invest)}</td>
+        <td style="text-align:center;color:var(--text-secondary);">${m.orders}</td>
+        <td style="text-align:center;color:var(--primary);font-size:12px;white-space:nowrap;">明细 ›</td>
+      </tr>`;
+    }).join('');
+
+    showModal2(g.name + ' · 上级汇总');
+    document.getElementById('modal-body-2').innerHTML = `
+      <div style="padding:4px 0 12px;">
+        <div style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;">
+          <div style="font-size:12px;color:var(--text-secondary);">「${this._escHtml(g.name)}」= ${this._escHtml(g.badge)} 的汇总，已出库 ${g.orders} 单</div>
+          <div style="display:flex;flex-wrap:wrap;gap:20px;margin-top:8px;align-items:baseline;">
+            <div><div style="font-size:11px;color:var(--text-light);">投入</div><div style="font-size:18px;font-weight:600;color:var(--primary);">${this._fmtMoney(g.invest)}</div></div>
+            <div><div style="font-size:11px;color:var(--text-light);">收益</div><div style="font-size:18px;font-weight:600;">${this._fmtMoney(g.revenue)}</div></div>
+            <div><div style="font-size:11px;color:var(--text-light);">盈亏</div><div style="font-size:18px;font-weight:600;color:${color};">${this._fmtMoney(pnl)}</div></div>
+            <div><div style="font-size:11px;color:var(--text-light);">盈亏率</div><div style="font-size:18px;font-weight:600;color:${color};">${this._rateTxt(pnl, g.invest)}</div></div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">下面按设备/下级分开，点某一行看它下面的单。</div>
+        <div class="table-wrapper" style="max-height:40vh;overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>下单设备/下级</th>
+                <th style="text-align:right;">投入</th>
+                <th style="text-align:right;">收益</th>
+                <th style="text-align:right;">盈亏</th>
+                <th style="text-align:right;">盈亏率</th>
+                <th style="text-align:center;">单数</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+            <tfoot>
+              <tr style="font-weight:600;background:var(--bg);">
+                <td>合计</td>
+                <td style="text-align:right;">${this._fmtMoney(g.invest)}</td>
+                <td style="text-align:right;">${this._fmtMoney(g.revenue)}</td>
+                <td style="text-align:right;color:${color};">${this._fmtMoney(pnl)}</td>
+                <td style="text-align:right;color:${color};white-space:nowrap;">${this._rateTxt(pnl, g.invest)}</td>
+                <td style="text-align:center;">${g.orders}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;">
+          <button class="btn btn-secondary" onclick="TransactionsModule._showDeviceBreakdown()">‹ 返回设备/下级列表</button>
+          <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
+        </div>
+      </div>
+    `;
+  },
+
+  // 上级汇总里再点某个设备/下级 → 看它下面的单（返回按钮回到上级那一层）
+  _showGroupMemberOrders(gIdx, mIdx) {
+    const g = (this._devGroupRows || [])[gIdx];
+    if (!g || !(g.members || [])[mIdx]) return;
+    this._showDeviceOrdersByName(g.members[mIdx].device, gIdx);
+  },
+
+  // 顶层点某个设备/下级 → 看它下面的单
   _showDeviceOrders(idx) {
-    const d = (this._devList || [])[idx];
-    if (!d) return;
-    const dev = d.device;
-    const orders = (this._dashOrders || []).filter(o => (((o.device || '').trim()) || '（未填）') === dev);
+    const sr = (this._devRows || [])[idx];
+    if (!sr || sr.row.isGroup) return;
+    this._showDeviceOrdersByName(sr.row.name);
+  },
+
+  // 按设备名渲染「这个设备/下级下面的单」；fromGroupIdx 有值时，返回按钮回到「上级汇总」那一层
+  _showDeviceOrdersByName(dev, fromGroupIdx) {
+    const devName = String(dev || '').trim() || '（未填）';
+    const d = (this._devList || []).find(x => (String(x.device).trim() || '（未填）') === devName)
+      || { device: devName, invest: 0, revenue: 0, profit: 0, orders: 0 };
+    const orders = (this._dashOrders || []).filter(o => (((o.device || '').trim()) || '（未填）') === devName);
     const sorted = [...orders].sort((a, b) => {
       const da = a.out_date || '', db = b.out_date || '';
       if (da !== db) return da < db ? 1 : -1;
@@ -1841,11 +1979,11 @@ const TransactionsModule = {
       </tr>`;
     }).join('');
 
-    showModal2('下单设备/下级 · ' + dev);
+    showModal2('下单设备/下级 · ' + devName);
     document.getElementById('modal-body-2').innerHTML = `
       <div style="padding:4px 0 12px;">
         <div style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;">
-          <div style="font-size:12px;color:var(--text-secondary);">「${dev}」已出库 ${orders.length} 单的采购本金之和</div>
+          <div style="font-size:12px;color:var(--text-secondary);">「${devName}」已出库 ${orders.length} 单的采购本金之和</div>
           <div style="font-size:22px;font-weight:600;color:var(--primary);margin-top:6px;">${this._fmtMoney(d.invest)}</div>
         </div>
         <div class="table-wrapper" style="max-height:44vh;overflow:auto;">
@@ -1873,7 +2011,9 @@ const TransactionsModule = {
           </table>
         </div>
         <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;">
-          <button class="btn btn-secondary" onclick="TransactionsModule._showDeviceBreakdown()">‹ 返回设备/下级列表</button>
+          ${typeof fromGroupIdx === 'number'
+            ? `<button class="btn btn-secondary" onclick="TransactionsModule._showDeviceGroup(${fromGroupIdx})">‹ 返回上级汇总</button>`
+            : `<button class="btn btn-secondary" onclick="TransactionsModule._showDeviceBreakdown()">‹ 返回设备/下级列表</button>`}
           <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
         </div>
       </div>
