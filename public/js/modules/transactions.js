@@ -253,7 +253,7 @@ const TransactionsModule = {
             <span class="filter-label">筛选条件</span>
             <div class="filter-chips" id="inbound-filter-fields"></div>
           </div>
-          <div class="filter-hint" id="inbound-filter-hint">点击「筛选条件」里的字段，就把筛选范围限定在该字段；不点则默认全字段搜索</div>
+          <div class="filter-hint" id="inbound-filter-hint">点击「筛选条件」里的字段可以多选（再点一下取消），就在这几个字段里找；一个都不选就是全字段搜索</div>
         </div>
         <div style="padding:8px 12px 0;font-size:12px;color:var(--text-secondary);">💡 登记数量、渠道、价格可以直接点击修改，改完自动重算库存与金额</div>
         <div class="card-body" style="padding:0;">
@@ -368,77 +368,111 @@ const TransactionsModule = {
     const hintEl = document.getElementById('inbound-filter-hint');
     if (!fieldsEl || !barEl) return;
 
-    const f = this._inboundFilter || (this._inboundFilter = { field: 'all', keyword: '' });
+    const f = this._inboundFilter || (this._inboundFilter = { fields: [], keyword: '' });
+    if (!Array.isArray(f.fields)) f.fields = [];
     const system = this._inboundSystem || 'main';
+    const labelOf = (k) => (this._inboundFilterDefs().find(d => d.key === k) || {}).label || k;
 
-    fieldsEl.innerHTML = this._inboundFilterDefs().map(d =>
-      `<span class="filter-chip${f.field === d.key ? ' active' : ''}" onclick="TransactionsModule._setInboundFilterField('${d.key}')">${d.label}</span>`
-    ).join('');
+    // 字段胶囊：可多选。一个都不选 = 全字段搜索
+    fieldsEl.innerHTML = this._inboundFilterDefs().map(d => {
+      const active = d.key === 'all' ? !f.fields.length : f.fields.includes(d.key);
+      const tip = d.key === 'all'
+        ? '点这里恢复全字段搜索'
+        : (active ? `把「${d.label}」移出筛选字段` : `把「${d.label}」加入筛选字段（可多选）`);
+      return `<span class="filter-chip${active ? ' active' : ''}" title="${tip}" onclick="TransactionsModule._toggleInboundFilterField('${d.key}')">${d.label}</span>`;
+    }).join('');
 
-    // 筛选栏：渠道 / 标记 / 下单设备 → 下拉选择（取值有限，比手打准）；其余 → 文本输入
+    // 筛选栏：只有「恰好选中一个」且是枚举型字段（渠道 / 标记 / 下单设备）时给下拉；多选或全字段 → 文本输入
+    const single = f.fields.length === 1 ? f.fields[0] : null;
     let opts = null, allLabel = '';
-    if (f.field === 'channel') {
+    if (single === 'channel') {
       opts = await this._getChannelOptions(system);
       allLabel = '全部渠道';
-    } else if (f.field === 'marked') {
+    } else if (single === 'marked') {
       opts = ['已标记', '未标记'];
       allLabel = '全部标记状态';
-    } else if (f.field === 'device') {
+    } else if (single === 'device') {
       opts = this._inboundDeviceOptions();
       allLabel = '全部设备/下级';
       if (!opts.length) opts = null;   // 一条都没填过设备 → 退化为文本输入，不给空下拉
     }
+    // 字段组合变了：只有涉及下拉字段时才清空关键词，免得打断「多选文本字段 + 一直打字」的流程
+    const nowKey = f.fields.join('|');
+    if (barEl.__lastKey !== undefined && barEl.__lastKey !== nowKey && (barEl.__lastWasSelect || !!opts)) {
+      f.keyword = '';
+    }
+    barEl.__lastKey = nowKey;
+    barEl.__lastWasSelect = !!opts;
+
     if (opts) {
-      if (barEl.__lastField !== f.field) { f.keyword = ''; }
-      barEl.innerHTML = `<select class="filter-input" id="inbound-filter-select" onchange="TransactionsModule._onInboundFilterInput(this.value)">
+      barEl.innerHTML = `<select class="filter-input" id="inbound-filter-select" onchange="TransactionsModule._onInboundFilterInput(this.value, true)">
         <option value="">${allLabel}</option>
         ${opts.map(o => `<option value="${o}"${String(f.keyword) === String(o) ? ' selected' : ''}>${o}</option>`).join('')}
       </select>`;
-      barEl.__lastField = f.field;
     } else {
-      if (barEl.__lastField && barEl.__lastField !== f.field) { f.keyword = ''; }
-      barEl.__lastField = f.field;
-      const ph = f.field === 'all'
+      const ph = !f.fields.length
         ? '输入关键词，全字段筛选…（编码 / 名称 / 规格 / 渠道 / 设备 / 数量 / 价格 / 日期）'
-        : `在「${(this._inboundFilterDefs().find(d => d.key === f.field) || {}).label || ''}」中筛选…`;
+        : (f.fields.length === 1
+            ? `在「${labelOf(f.fields[0])}」中筛选…`
+            : `在选中的 ${f.fields.length} 个字段里筛选，任一个命中就显示…`);
       barEl.innerHTML = `<input type="text" class="filter-input" id="inbound-filter-input" placeholder="${ph}"
         value="${String(f.keyword || '').replace(/"/g, '&quot;')}"
         oninput="TransactionsModule._onInboundFilterInput(this.value)">`;
     }
 
     if (hintEl) {
-      hintEl.textContent = f.field === 'all'
-        ? '点击「筛选条件」里的字段，就把筛选范围限定在该字段；不点则默认全字段搜索'
-        : `当前只在「${(this._inboundFilterDefs().find(d => d.key === f.field) || {}).label}」这个字段里筛选（再点一次「全部字段」可恢复全字段搜索）`;
+      hintEl.textContent = !f.fields.length
+        ? '「筛选条件」里的字段可以多选（再点一下取消）；一个都不选就是全字段搜索'
+        : `当前只在：${f.fields.map(labelOf).join('、')} —— 这 ${f.fields.length} 个字段里筛选，任一命中就显示（点「全部字段」可恢复全字段搜索）`;
     }
   },
 
-  // 点击字段胶囊 → 限定筛选范围
-  _setInboundFilterField(key) {
-    this._inboundFilter = this._inboundFilter || { field: 'all', keyword: '' };
-    if (this._inboundFilter.field === key) key = 'all';
-    this._inboundFilter.field = key;
-    this._inboundFilter.keyword = '';
-    this._renderInboundFilterControls().then(() => this._renderInboundRows());
+  // 点击字段胶囊 → 选中/取消该字段（可多选）；点「全部字段」= 清空选中
+  _toggleInboundFilterField(key) {
+    const f = this._inboundFilter = this._inboundFilter || { fields: [], keyword: '' };
+    if (!Array.isArray(f.fields)) f.fields = [];
+    if (key === 'all') {
+      f.fields = [];
+    } else if (f.fields.includes(key)) {
+      f.fields = f.fields.filter(k => k !== key);
+    } else {
+      f.fields = f.fields.concat(key);
+    }
+    // 关键词保留，方便「先输关键词、再勾字段」
+    const before = document.getElementById('inbound-filter-input');
+    const hadFocus = !!(before && typeof document.activeElement !== 'undefined' && document.activeElement === before);
+    this._renderInboundFilterControls().then(() => {
+      this._renderInboundRows();
+      if (hadFocus) {
+        const el = document.getElementById('inbound-filter-input');
+        if (el && typeof el.focus === 'function') {
+          el.focus();
+          const v = String(el.value || '');   // 光标补到末尾，接着打字
+          el.value = ''; el.value = v;
+        }
+      }
+    });
   },
 
   // 输入/选择关键词 → 只重绘表格，不重建控件（否则输入框会失焦）
-  _onInboundFilterInput(value) {
-    this._inboundFilter = this._inboundFilter || { field: 'all', keyword: '' };
+  // exact=true 表示值来自下拉（枚举字段 → 精确匹配）
+  _onInboundFilterInput(value, exact) {
+    this._inboundFilter = this._inboundFilter || { fields: [], keyword: '' };
     this._inboundFilter.keyword = value || '';
+    this._inboundFilter.exact = !!exact;
     clearTimeout(this._inboundFilterTimer);
     this._inboundFilterTimer = setTimeout(() => this._renderInboundRows(), 180);
   },
 
-  // 清除筛选（回到全部字段 + 清空关键词）
+  // 清除筛选（回到全字段 + 清空关键词）
   _clearInboundFilter() {
-    this._inboundFilter = { field: 'all', keyword: '' };
+    this._inboundFilter = { fields: [], keyword: '', exact: false };
     const barEl = document.getElementById('inbound-filter-bar');
-    if (barEl) barEl.__lastField = null;
+    if (barEl) { barEl.__lastKey = undefined; barEl.__lastWasSelect = false; }
     this._renderInboundFilterControls().then(() => this._renderInboundRows());
   },
 
-  // 单条记录是否命中筛选
+  // 单条记录是否命中筛选（字段可多选：任意一个字段命中即显示）
   _matchInboundFilter(r, products, f) {
     const kw = String((f && f.keyword) || '').trim().toLowerCase();
     if (!kw) return true;
@@ -455,14 +489,18 @@ const TransactionsModule = {
       created_at: `${this._fmtDateTime(r.created_at)} ${String(r.created_at || '')}`,
       marked: r.row_color ? '已标记' : '未标记'
     };
-    if (!f.field || f.field === 'all') {
-      return Object.keys(vals).some(k => vals[k].toLowerCase().includes(kw));
-    }
-    const v = vals[f.field];
-    if (v === undefined) return false;
-    const sv = String(v).trim().toLowerCase();
-    // 设备是下拉选的 → 要完全相等，否则选「1」会把「10」「11」也带出来
-    return f.field === 'device' ? sv === kw : sv.includes(kw);
+    // 没选字段（或选的字段全无效）→ 全字段搜索
+    const keys = (f && Array.isArray(f.fields) && f.fields.length)
+      ? f.fields
+      : Object.keys(vals);
+    return keys.some(k => {
+      const v = vals[k];
+      if (v === undefined) return false;
+      const sv = String(v).trim().toLowerCase();
+      // 设备一定是精确相等（选「1」不该带出「10」「11」）；渠道/标记来自下拉时也精确
+      const exact = k === 'device' || (!!f.exact && (k === 'channel' || k === 'marked'));
+      return exact ? sv === kw : sv.includes(kw);
+    });
   },
 
   // 只重绘表格主体（筛选变化时用，不重新请求接口）
@@ -473,7 +511,7 @@ const TransactionsModule = {
     const system = this._inboundSystem || 'main';
     const all = this._inboundAllRecords || [];
     const products = this._inboundProducts || [];
-    const f = this._inboundFilter || { field: 'all', keyword: '' };
+    const f = this._inboundFilter || { fields: [], keyword: '' };
     const filtering = !!(f.keyword && String(f.keyword).trim());
 
     const records = filtering ? all.filter(r => this._matchInboundFilter(r, products, f)) : all;
