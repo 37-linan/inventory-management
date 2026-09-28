@@ -13,7 +13,9 @@
 - **GitHub** `37-linan/inventory-management`(443)：`GIT_SSH_COMMAND="ssh -i C:/Users/nan/.ssh/github_workbuddy -o StrictHostKeyChecking=no -p 443" git push origin main`
 - 备案 粤ICP备2026122814号-1 / 粤公网安备 44140302000277号（李楠）；**SSL 2026-11-23 到期**需续
 - ⚠️ PATH 偶发丢失（git/md5sum not found）→ 命令前加 `export PATH="/usr/bin:/bin:/c/Users/nan/.workbuddy/binaries/PortableGit/versions/1.2.0/bin:$PATH"`
-- 上线：本地改 → 推 GitHub → **scp 直传**覆盖（别让服务器 curl GitHub，raw 常超时）→ 改 `public/` **必升 `sw.js` CACHE_NAME**（现 **v47**）；改 `server.js`/`routes/` 才 `pm2 restart inventory-app` → `md5sum` 比对 + `curl -w '%{http_code}'`
+- ⚠️ `ssh 远端 "export PATH=...$PATH; ..."` 里的 `$PATH` 会被**本地** shell 展开，把 Windows PATH（含 `/c/Program Files (x86)/...`）塞进远端命令 → 远端报 `syntax error near unexpected token '('`。
+  远端命令要用**单引号**包，或干脆别用 ssh 校验：直接 `curl` 公网文件对 `md5sum`（更省事，已验证够用）
+- 上线：本地改 → 推 GitHub → **scp 直传**覆盖（别让服务器 curl GitHub，raw 常超时）→ 改 `public/` **必升 `sw.js` CACHE_NAME**（现 **v48**）；改 `server.js`/`routes/` 才 `pm2 restart inventory-app` → `md5sum` 比对 + `curl -w '%{http_code}'`
 - **交付时必须提醒用户：手机要整个关掉网页重开**
 - ❗22 端口时不时全封（2222/8022 也不通，80/443 正常）→ scp/ssh 套 5 次重试
 - ⚠️ 同一文件多处编辑**必须串行**（并行两次 Edit 互相覆盖，09-19 踩过）；改完 `grep -n` 复核
@@ -100,7 +102,13 @@
   - `_showDeviceGroup(idx)` → 二级弹窗（标题「李楠 · 上级汇总」）列成员 5 项指标 + 合计
   - `_showGroupMemberOrders(gIdx,mIdx)` / `_showDeviceOrders(idx)` → `_showDeviceOrdersByName(dev, fromGroupIdx)`；`fromGroupIdx` 有值时「返回」回到上级那层，否则回顶层列表
   - ⚠️ 合计行仍按**原始设备**求和（别把李楠那层重复累加）；`_showMonthBreakdown` 完全不动
+- ❗**「按月 · 设备投入」也同步支持**（09-29 用户追加："按月的也给我更新一下"）：每个月份分组内同样按 `DEVICE_GROUPS` 汇总出「李楠」一行（带徽章、排该月第一），点它 → `_showMonthGroupRow(idx)` 弹「2026-09 · 李楠 · 上级汇总」（该月成员 5 项指标 + 合计）；成员点开 → `_showMonthGroupMemberOrders(gIdx,mIdx)` → `_showMonthDeviceOrdersByName(month, dev, fromGroupIdx)`
+  - ⚠️ 月份头上的「投入 / 盈亏」合计仍按**原始设备**求和（别把李楠重复累加）；`_mdRows` 现在存渲染行（含 `isGroup/name/members`），`_showMonthDeviceOrders(idx)` 对组行安全返回
+  - ⚠️ 该月只有部分设备出过库 → 徽章只列真实存在的那几个（如 2026-08 只有 1、2 卖了 → 徽章 `1 · 2`）
+  - 仍然**不动**的地方：入库台账、单利润明细、筛选下拉、`_showDeviceBreakdown` 的明细列
 - 自检 `device-group-test.js`(57) + `device-group-live-test.js`(29，**线上真实数据**，与用户截图逐项核对)
+  - ❗**需求变更后旧断言会过时**：给按月弹窗加汇总后，`device-group-test` 第 6 节「按月里没有李楠」那 4 条 + `device-group-live-test` 3.4 会失败 —— 是**断言过时不是 bug**，按新需求改写（已改成「也汇总出李楠」）
+- `device-group-month-test.js`(**45**，**线上真实数据**，逐月核对：组行金额 = 该月 1+2+3 之和、月份头合计未被重复累加、月份胶囊筛选、组内钻取只看该月该设备的单、月度汇总之和 == 不筛月份时的汇总)
 
 ## 「待次日行情」09-15
 - 今天录行情 + 今天出库 → D+1 价不存在，先用最近价会像"最终结果"的小亏损
@@ -154,4 +162,5 @@
 - 脚本放 `.workbuddy/tmp/`（不入 git）；要写回项目文件时走上面的「先落 tmp 再 rm+install」通路
 - ❗❗**新增数据库表后旧测试会整片挂掉**（严格 mock 里 `throw new Error('未 mock 的 SQL')` → handler 被 catch → 500，看着像功能坏了）。`partial-ship-test`/`set-bundle-test` 就因 09-25 的 `main_hold` 失效
   → 修法：严格 mock 加 `if (/main_hold/i.test(s)) return { rows: [] };` + `CREATE/ALTER TABLE` 兜底
-  → **铁律：给路由加新表后，必须重跑 `tmp/` 下全部 `*test*.js`（现 15 个，共 511 项）**
+  → **铁律：给路由加新表后，必须重跑 `tmp/` 下全部 `*test*.js`（现 16 个）**；
+  改前端交互后同样要全跑一遍（16 个脚本一条 `for` 循环跑完约十秒，比手点快且不漏）
