@@ -2050,8 +2050,9 @@ const TransactionsModule = {
     if (cur !== 'ALL' && monthList.indexOf(cur) < 0) cur = 'ALL';
     this._mdMonth = cur;
 
-    const flat = [];   // 行下标 → {month, device}，供点击钻取（不把名字拼进 onclick）
+    const flat = [];   // 行下标 → {month,isGroup,name,device,members}，供点击钻取（不把名字拼进 onclick）
     let html = '', sumInvest = 0, sumRevenue = 0, sumProfit = 0, sumOrders = 0;
+    const addUp = (arr, key) => arr.reduce((s, x) => s + (Number(x[key]) || 0), 0);
 
     (cur === 'ALL' ? monthList : [cur]).forEach(m => {
       const devs = Object.values(agg[m] || {}).sort((a, b) => b.invest - a.invest);
@@ -2071,22 +2072,55 @@ const TransactionsModule = {
         </td>
       </tr>`;
 
+      // 这个月里：按 DEVICE_GROUPS 先汇总出一层「上级」（与「按设备/下级」弹窗同一套配置）
+      // ❗只影响这张表的显示；月份头上的合计仍按原始设备求和，不会重复累加
+      const byName = {};
+      devs.forEach(d => { byName[String(d.device).trim()] = d; });
+      const usedNames = new Set();
+      const monthRows = [];
+      (this.DEVICE_GROUPS || []).forEach(g => {
+        const members = (g.devices || []).map(n => byName[String(n).trim()]).filter(Boolean);
+        if (!members.length) return;   // 这个月这几个设备都没出过库 → 不出现这一层
+        members.forEach(x => usedNames.add(String(x.device).trim()));
+        monthRows.push({
+          isGroup: true, month: m, name: g.name || '（未命名）',
+          badge: members.map(x => x.device).join(' · '), members,
+          invest: addUp(members, 'invest'), revenue: addUp(members, 'revenue'),
+          profit: addUp(members, 'profit'), orders: addUp(members, 'orders'),
+        });
+      });
       devs.forEach(d => {
+        if (usedNames.has(String(d.device).trim())) return;
+        monthRows.push(Object.assign({ isGroup: false, month: m, name: d.device }, d));
+      });
+      monthRows.sort((a, b) => (Number(b.invest) || 0) - (Number(a.invest) || 0));
+
+      monthRows.forEach(r => {
         const idx = flat.length;
-        flat.push({ month: m, device: d.device });
-        const pnl = Number(d.profit) || 0;
+        flat.push(r);
+        const pnl = Number(r.profit) || 0;
         const color = pnl >= 0 ? '#c62828' : '#2e7d32';
-        html += `<tr style="cursor:pointer;" onclick="TransactionsModule._showMonthDeviceOrders(${idx})" title="点击查看 ${m} 这个设备/下级下面的单">
-          <td style="font-size:12px;font-weight:500;">${d.device}</td>
-          <td style="text-align:right;font-weight:600;">${this._fmtMoney(d.invest)}</td>
-          <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(d.revenue)}</td>
+        const nameHtml = r.isGroup
+          ? `<span style="font-weight:700;color:var(--primary);">${this._escHtml(r.name)}</span><span class="badge" style="margin-left:6px;font-size:10px;font-weight:400;background:var(--bg);border:1px solid var(--border);color:var(--text-secondary);white-space:nowrap;" title="由这些设备/下级汇总而来">${this._escHtml(r.badge)}</span>`
+          : this._escHtml(r.name);
+        const clickFn = r.isGroup ? `_showMonthGroupRow(${idx})` : `_showMonthDeviceOrders(${idx})`;
+        html += `<tr style="cursor:pointer;" onclick="TransactionsModule.${clickFn}" title="${r.isGroup ? '点击展开，看这个月这一级下面各个设备/下级' : `点击查看 ${m} 这个设备/下级下面的单`}">
+          <td style="font-size:12px;font-weight:500;">${nameHtml}</td>
+          <td style="text-align:right;font-weight:600;">${this._fmtMoney(r.invest)}</td>
+          <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(r.revenue)}</td>
           <td style="text-align:right;color:${color};font-weight:600;">${this._fmtMoney(pnl)}</td>
-          <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._rateTxt(pnl, d.invest)}</td>
-          <td style="text-align:center;color:var(--text-secondary);">${d.orders}</td>
+          <td style="text-align:right;color:${color};font-weight:600;white-space:nowrap;">${this._rateTxt(pnl, r.invest)}</td>
+          <td style="text-align:center;color:var(--text-secondary);">${r.orders}</td>
         </tr>`;
       });
     });
     this._mdRows = flat;
+    // 有上级汇总时给一句口径说明（只在有分组时出现）
+    const mdGroupNames = [];
+    flat.forEach(r => { if (r.isGroup && mdGroupNames.indexOf(r.name) < 0) mdGroupNames.push(r.name); });
+    const monthGroupNote = mdGroupNames.length
+      ? `<div style="font-size:11px;color:var(--text-light);margin-top:6px;">「${mdGroupNames.map(n => this._escHtml(n)).join('、')}」是上级汇总，只在<b>本弹窗</b>显示；其它地方（入库台账、单利润、设备/下级弹窗的明细等）仍按入库时填的设备名区分。</div>`
+      : '';
 
     const chips = ['ALL', ...monthList].map(k =>
       `<span class="filter-chip ${k === cur ? 'active' : ''}" onclick="TransactionsModule._mdMonth='${k}'; TransactionsModule._renderMonthBreakdown()">${k === 'ALL' ? '全部' : k}</span>`
@@ -2097,7 +2131,7 @@ const TransactionsModule = {
     document.getElementById('modal-body-2').innerHTML = `
       <div style="padding:4px 0 12px;">
         <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">
-          已出库 ${orders.length} 单，按<b>出库月份</b> + <b>下单设备/下级</b>两个条件拆分。点某一行可看它下面的单。
+          已出库 ${orders.length} 单，按<b>出库月份</b> + <b>下单设备/下级</b>两个条件拆分。点某一行可看它下面的单${flat.some(r => r.isGroup) ? '；带徽章的那一行是<b>上级汇总</b>，点它能展开看到这个月下面各个设备/下级' : ''}。
         </div>
         <div class="filter-chips" style="margin-bottom:10px;">${chips}</div>
         <div class="table-wrapper" style="max-height:50vh;overflow:auto;">
@@ -2126,6 +2160,7 @@ const TransactionsModule = {
           </table>
         </div>
         <div style="font-size:11px;color:var(--text-light);margin-top:10px;">月份按「出库日期」归月；只统计已出库的单，未出库的不出现在这里。</div>
+        ${monthGroupNote}
         <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;">
           <button class="btn btn-secondary" onclick="TransactionsModule._showDeviceBreakdown()">‹ 按设备/下级看</button>
           <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
@@ -2139,14 +2174,96 @@ const TransactionsModule = {
     this._renderMonthBreakdown();
   },
 
-  // 按月弹窗里点某一行 → 看「该月 + 该设备/下级」下面的单
+  // 按月弹窗里点「上级汇总」那一行 → 看这个月里它下面每个设备/下级的数（再点某一个才看单）
+  _showMonthGroupRow(idx) {
+    const g = (this._mdRows || [])[idx];
+    if (!g || !g.isGroup) return;
+    const members = g.members || [];
+    const pnl = Number(g.profit) || 0;
+    const color = pnl >= 0 ? '#c62828' : '#2e7d32';
+
+    const rows = members.map((m, i) => {
+      const p = Number(m.profit) || 0;
+      const c = p >= 0 ? '#c62828' : '#2e7d32';
+      return `<tr style="cursor:pointer;" onclick="TransactionsModule._showMonthGroupMemberOrders(${idx},${i})" title="点击查看 ${g.month} 这个设备/下级下面的单">
+        <td style="font-size:12px;font-weight:500;">${this._escHtml(m.device)}</td>
+        <td style="text-align:right;font-weight:600;">${this._fmtMoney(m.invest)}</td>
+        <td style="text-align:right;color:var(--text-secondary);">${this._fmtMoney(m.revenue)}</td>
+        <td style="text-align:right;color:${c};font-weight:600;">${this._fmtMoney(p)}</td>
+        <td style="text-align:right;color:${c};font-weight:600;white-space:nowrap;">${this._rateTxt(p, m.invest)}</td>
+        <td style="text-align:center;color:var(--text-secondary);">${m.orders}</td>
+        <td style="text-align:center;color:var(--primary);font-size:12px;white-space:nowrap;">明细 ›</td>
+      </tr>`;
+    }).join('');
+
+    showModal2(g.month + ' · ' + g.name + ' · 上级汇总');
+    document.getElementById('modal-body-2').innerHTML = `
+      <div style="padding:4px 0 12px;">
+        <div style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;">
+          <div style="font-size:12px;color:var(--text-secondary);">「${g.month}」的「${this._escHtml(g.name)}」= ${this._escHtml(g.badge)} 的汇总，已出库 ${g.orders} 单</div>
+          <div style="display:flex;flex-wrap:wrap;gap:20px;margin-top:8px;align-items:baseline;">
+            <div><div style="font-size:11px;color:var(--text-light);">投入</div><div style="font-size:18px;font-weight:600;color:var(--primary);">${this._fmtMoney(g.invest)}</div></div>
+            <div><div style="font-size:11px;color:var(--text-light);">收益</div><div style="font-size:18px;font-weight:600;">${this._fmtMoney(g.revenue)}</div></div>
+            <div><div style="font-size:11px;color:var(--text-light);">盈亏</div><div style="font-size:18px;font-weight:600;color:${color};">${this._fmtMoney(pnl)}</div></div>
+            <div><div style="font-size:11px;color:var(--text-light);">盈亏率</div><div style="font-size:18px;font-weight:600;color:${color};">${this._rateTxt(pnl, g.invest)}</div></div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">下面按设备/下级分开，点某一行看它下面的单。</div>
+        <div class="table-wrapper" style="max-height:40vh;overflow:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>下单设备/下级</th>
+                <th style="text-align:right;">投入</th>
+                <th style="text-align:right;">收益</th>
+                <th style="text-align:right;">盈亏</th>
+                <th style="text-align:right;">盈亏率</th>
+                <th style="text-align:center;">单数</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+            <tfoot>
+              <tr style="font-weight:600;background:var(--bg);">
+                <td>合计</td>
+                <td style="text-align:right;">${this._fmtMoney(g.invest)}</td>
+                <td style="text-align:right;">${this._fmtMoney(g.revenue)}</td>
+                <td style="text-align:right;color:${color};">${this._fmtMoney(pnl)}</td>
+                <td style="text-align:right;color:${color};white-space:nowrap;">${this._rateTxt(pnl, g.invest)}</td>
+                <td style="text-align:center;">${g.orders}</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;">
+          <button class="btn btn-secondary" onclick="TransactionsModule._backToMonthList()">‹ 返回按月列表</button>
+          <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
+        </div>
+      </div>
+    `;
+  },
+
+  // 上级汇总里再点某个设备/下级 → 看「该月 + 该设备/下级」下面的单
+  _showMonthGroupMemberOrders(gIdx, mIdx) {
+    const g = (this._mdRows || [])[gIdx];
+    if (!g || !(g.members || [])[mIdx]) return;
+    this._showMonthDeviceOrdersByName(g.month, g.members[mIdx].device, gIdx);
+  },
+
+  // 按月弹窗里点某个设备/下级 → 看「该月 + 该设备/下级」下面的单
   _showMonthDeviceOrders(idx) {
     const row = (this._mdRows || [])[idx];
-    if (!row) return;
+    if (!row || row.isGroup) return;
+    this._showMonthDeviceOrdersByName(row.month, row.device);
+  },
+
+  // 按「月份 + 设备名」渲染单列表；fromGroupIdx 有值时「返回」回到该月的上级汇总那一层
+  _showMonthDeviceOrdersByName(month, dev, fromGroupIdx) {
     const orders = (this._dashOrders || []).filter(o => {
       const m = String(o.out_date || '').slice(0, 7) || '（无出库日期）';
       const k = ((o.device || '').trim()) || '（未填）';
-      return m === row.month && k === row.device;
+      return m === month && k === dev;
     });
     const sorted = [...orders].sort((a, b) => {
       const da = a.out_date || '', db = b.out_date || '';
@@ -2173,11 +2290,11 @@ const TransactionsModule = {
     const profit = revenue - invest;
     const color = profit >= 0 ? '#c62828' : '#2e7d32';
 
-    showModal2(row.month + ' · ' + row.device);
+    showModal2(month + ' · ' + dev);
     document.getElementById('modal-body-2').innerHTML = `
       <div style="padding:4px 0 12px;">
         <div style="background:var(--bg);padding:12px;border-radius:8px;margin-bottom:12px;">
-          <div style="font-size:12px;color:var(--text-secondary);">「${row.month}」+「${row.device}」已出库 ${orders.length} 单的采购本金之和</div>
+          <div style="font-size:12px;color:var(--text-secondary);">「${month}」+「${dev}」已出库 ${orders.length} 单的采购本金之和</div>
           <div style="font-size:22px;font-weight:600;color:var(--primary);margin-top:6px;">${this._fmtMoney(invest)}</div>
           <div style="font-size:11px;color:var(--text-light);margin-top:6px;">收益 ${this._fmtMoney(revenue)}　盈亏 <b style="color:${color};">${this._fmtMoney(profit)}</b>（${this._rateTxt(profit, invest)}）</div>
         </div>
@@ -2208,7 +2325,9 @@ const TransactionsModule = {
           </table>
         </div>
         <div style="margin-top:14px;display:flex;justify-content:space-between;gap:8px;">
-          <button class="btn btn-secondary" onclick="TransactionsModule._backToMonthList()">‹ 返回按月列表</button>
+          ${typeof fromGroupIdx === 'number'
+            ? `<button class="btn btn-secondary" onclick="TransactionsModule._showMonthGroupRow(${fromGroupIdx})">‹ 返回上级汇总</button>`
+            : `<button class="btn btn-secondary" onclick="TransactionsModule._backToMonthList()">‹ 返回按月列表</button>`}
           <button class="btn btn-secondary" onclick="closeModal2()">关闭</button>
         </div>
       </div>
