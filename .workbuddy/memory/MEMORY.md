@@ -142,6 +142,9 @@
 - **行内编辑**：数量/渠道/价格点击就地改，失焦/回车保存，保存后库存/总量/整单金额/单利润重算
 - **筛选**：⚠️ 渲染拆成 `_refreshInboundTable()`（拉数据）+ `_renderInboundRows()`（只画表），否则每输入一次都请求 → 卡 + 失焦
   - 设备候选取 `_inboundAllRecords` **全量**去重+trim；**设备按完全相等匹配**（有「1」和「10」），渠道/标记保持 includes
+  - ✅ **字段可多选**（09-29 定）：状态 `_inboundFilter = {fields:[], keyword, exact}`（❌ 旧的 `{field:'all'}` 已废）；`fields` 空 = 全字段；点胶囊走 `_toggleInboundFilterField(key)`（再点取消；点「全部字段」清空）；**多字段是 OR —— 任一命中就显示**
+    - 单字段且是枚举型（渠道/标记/设备）→ 下拉；多选或全字段 → 文本框（下拉 `onchange` 传 `exact=true` → 精确匹配；手打走 includes）
+    - ⚠️ 切换字段时**文本字段之间保留关键词**（方便「先输词、再勾字段」），只有涉及下拉才清空；自检 `inbound-filter-multi-test.js`（80 项）
 - **一单多品沿用**：`continueInbound()` 里 `form.reset()` 后只回填**订单号 + 下单设备**；**整单金额必须清空**
 - **设备归属**：一单的设备 = 该单**第一个填了值的商品**（按 id 升序）；不同设备**不拆**整单
 - ⚠️ 设备名已统一（`林浩东`/`林h东` 合并，09-18，备份表 `main_inbound_dev_bak_20260918`）；防复发靠 `<datalist>` 只提示不限制
