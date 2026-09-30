@@ -625,12 +625,14 @@ module.exports = function(db) {
     try {
       const pid = req.query.product_id;
       // 注意：to_char(date,'YYYY-MM-DD') 把 DATE 转字符串，避免前端 toISOString() 字符串匹配不上
+      // ❗按 product_id 查时**必须同时带上 product_code**：「导入行情」批量写入的行没有 product_id（null），
+      //   只按 id 查会把它们漏掉 → 商品表行情图空白（"暂无价格数据"）。历史脏数据已回填，此处为兜底。
       const sql = pid
         ? `SELECT id, product_code, product_id, price, to_char(date, 'YYYY-MM-DD') as date, created_at
-           FROM main_price_history WHERE product_id = ? ORDER BY date DESC LIMIT 30`
+           FROM main_price_history WHERE product_id = ? OR product_code = ? ORDER BY date DESC LIMIT 30`
         : `SELECT id, product_code, product_id, price, to_char(date, 'YYYY-MM-DD') as date, created_at
            FROM main_price_history WHERE product_code = ? ORDER BY date DESC LIMIT 30`;
-      const params = pid ? [pid] : [req.params.productCode];
+      const params = pid ? [pid, req.params.productCode] : [req.params.productCode];
       const result = await db.query(sql, params);
       res.json(result.rows);
     } catch (e) {
@@ -641,10 +643,11 @@ module.exports = function(db) {
   router.get('/price-history/:productCode/latest', async (req, res) => {
     try {
       const pid = req.query.product_id;
+      // ❗同上：带上 product_code，否则「导入行情」写入的行（product_id 为 null）查不到
       const sql = pid
-        ? `SELECT price, to_char(date, 'YYYY-MM-DD') as date FROM main_price_history WHERE product_id = ? ORDER BY date DESC LIMIT 1`
+        ? `SELECT price, to_char(date, 'YYYY-MM-DD') as date FROM main_price_history WHERE product_id = ? OR product_code = ? ORDER BY date DESC LIMIT 1`
         : `SELECT price, to_char(date, 'YYYY-MM-DD') as date FROM main_price_history WHERE product_code = ? ORDER BY date DESC LIMIT 1`;
-      const params = pid ? [pid] : [req.params.productCode];
+      const params = pid ? [pid, req.params.productCode] : [req.params.productCode];
       const result = await db.query(sql, params);
       res.json(result.rows[0] || { price: 0 });
     } catch (e) {
@@ -658,18 +661,26 @@ module.exports = function(db) {
       // 优先用前端传来的本地日期（避免服务器 UTC 切片造成偏移）
       const today = date || new Date().toISOString().slice(0, 10);
       
-      const existing = product_id
-        ? await db.query('SELECT id FROM main_price_history WHERE product_id = ? AND date = ?', [product_id, today])
+      // ❗前端没传 product_id 时（如「单利润明细 → 补录行情」）按编码补上：
+      //   商品表行情图是按 product_id 查的，漏写会在图上显示"暂无价格数据"。
+      let pid = product_id || null;
+      if (!pid && product_code) {
+        const pr = await db.query('SELECT id FROM main_products WHERE code = ? LIMIT 1', [product_code]);
+        if (pr.rows[0]) pid = pr.rows[0].id;
+      }
+
+      const existing = pid
+        ? await db.query('SELECT id FROM main_price_history WHERE product_id = ? AND date = ?', [pid, today])
         : await db.query('SELECT id FROM main_price_history WHERE product_code = ? AND date = ?', [product_code, today]);
       if (existing.rows[0]) {
         await db.query(
           'UPDATE main_price_history SET price = ?, product_id = COALESCE(?, product_id) WHERE id = ?',
-          [price, product_id || null, existing.rows[0].id]
+          [price, pid, existing.rows[0].id]
         );
       } else {
         await db.query(
           'INSERT INTO main_price_history (product_code, price, date, product_id) VALUES (?, ?, ?, ?)',
-          [product_code, price, today, product_id || null]
+          [product_code, price, today, pid]
         );
       }
       res.json({ success: true });
@@ -717,6 +728,11 @@ module.exports = function(db) {
       await ensurePriceAliasTable(db);
       const date = String((req.body && req.body.date) || '').slice(0, 10) || await todayOf(db);
       const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+      // ❗写入时必须带上 product_id：商品表行情图是按 product_id 查的，
+      //   只写 product_code 会导致新导入的行情在图上空白（"暂无价格数据"）。
+      const pRes = await db.query('SELECT id, code FROM main_products');
+      const idOfCode = {};
+      pRes.rows.forEach(p => { if (!(p.code in idOfCode)) idOfCode[p.code] = p.id; });
       let saved = 0, aliased = 0, failed = 0;
       const errors = [];
       for (const it of items) {
@@ -724,12 +740,13 @@ module.exports = function(db) {
         const price = Number((it && it.price) || 0) || 0;
         const raw = String((it && it.raw) || '').trim();
         if (!code || !(price > 0)) { failed++; continue; }
+        const pid = idOfCode[code] || null;
         try {
           const ex = await db.query('SELECT id FROM main_price_history WHERE product_code = ? AND date = ?', [code, date]);
           if (ex.rows[0]) {
-            await db.query('UPDATE main_price_history SET price = ? WHERE id = ?', [price, ex.rows[0].id]);
+            await db.query('UPDATE main_price_history SET price = ?, product_id = COALESCE(product_id, ?) WHERE id = ?', [price, pid, ex.rows[0].id]);
           } else {
-            await db.query('INSERT INTO main_price_history (product_code, price, date) VALUES (?, ?, ?)', [code, price, date]);
+            await db.query('INSERT INTO main_price_history (product_code, product_id, price, date) VALUES (?, ?, ?, ?)', [code, pid, price, date]);
           }
           saved++;
           const key = normAlias(raw);
