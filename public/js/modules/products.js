@@ -14,6 +14,7 @@ const ProductsModule = {
           <div class="btn-group">
             <button class="btn btn-primary" onclick="ProductsModule.showAddForm('${system}')">➕ 添加物品</button>
             <button class="btn btn-success" onclick="ProductsModule.showBatchImport('${system}')">📥 批量导入</button>
+            <button class="btn btn-secondary" onclick="ProductsModule.showPriceImport('${system}')">📊 导入行情</button>
             <button class="btn btn-secondary" onclick="ProductsModule.manageTypes('${system}')">📑 管理类型</button>
           </div>
         </div>
@@ -1222,6 +1223,193 @@ ${rowsHtml}
 
     if (success > 0) {
       await this.loadProducts(system);
+    }
+  },
+
+  // ===== 导入行情（2026-10-01）=====
+  // 行情表上的商品名跟系统里录的名字对不上 → 算法只给候选，**逐条由人确认**，
+  // 确认过的写进别名表，下次同名直接命中、不再问。
+  // ❗任何一条都不会自动拍板 —— 就算算法很确定，也要你点一下（用户明确要求过）。
+  showPriceImport(system) {
+    showModal('导入行情');
+    const body = document.getElementById('modal-body');
+    const d = new Date();
+    const ymd = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    body.innerHTML = `
+      <div style="padding:8px;max-height:72vh;overflow-y:auto;">
+        <p style="color:var(--text-secondary);margin-bottom:10px;font-size:13px;line-height:1.8;">
+          把行情表里的「商品名 + 结算价」贴进来，<strong>一行一个</strong>，价格写在行尾。<br/>
+          只贴<span style="color:var(--text);">你系统里有的</span>商品，其余的不用管。<br/>
+          系统先自动找最像的，<strong>然后一条一条让你确认</strong> —— 确认过的会记住，下次直接对上。
+        </p>
+        <textarea id="price-import-text" rows="8"
+          style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:monospace;resize:vertical;box-sizing:border-box;"
+          placeholder="奔富407 500&#10;mini相纸10张锡纸 57&#10;小米手环11nc 银 333&#10;富士拍立得mini13国行 香芋紫 605"></textarea>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+          <label style="font-size:13px;color:var(--text-secondary);">行情生效日</label>
+          <input type="date" id="price-import-date" value="${ymd}"
+            style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;" />
+          <button class="btn btn-primary" onclick="ProductsModule.submitPriceMatch()">开始配对</button>
+          <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+        </div>
+        <div id="price-import-result" style="margin-top:14px;"></div>
+      </div>
+    `;
+    this._priceRows = [];
+  },
+
+  // 解析成 [{name, price}]。兼容 tab / 多空格 / ¥ 前缀，
+  // 并处理行情表里「黑/银 273/280」这种一行多色多价（拆完仍会逐条让人确认）
+  _parsePriceText(text) {
+    const COLOR = '黑白蓝绿紫粉灰银金红橙黄棕青';
+    const SKIP = /结算价|行情|地址|不代表|报单群|画风|收到货|不包|不退|不换|国补|政府|全系|备注|说明|以上|以下|均价|准成交|品类/;
+    const out = [];
+    String(text || '').split(/\r?\n/).forEach(line => {
+      const s = line.replace(/\u3000/g, ' ').replace(/\|/g, '\t').trim();
+      if (!s) return;
+      if (SKIP.test(s)) return;
+      // 行尾的价格表达式：500 / ¥500 / 255/265（一行多色多价）
+      const m = s.match(/(?:^|[\s\t])([¥￥]?\s*\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)*)\s*(?:元|块)?\s*$/);
+      if (!m) return;
+      const prices = m[1].replace(/[¥￥\s]/g, '').split('/').map(Number).filter(n => n > 0);
+      if (!prices.length) return;
+      const name = s.slice(0, m.index).replace(/\t/g, ' ').replace(/[\s:：\-–—\/]+$/, '').replace(/\s+/g, ' ').trim();
+      if (!name) return;
+      // 名字里带斜杠（"小米手环10黑/银"）→ 按段拆开，第二段起补回前缀
+      if (name.indexOf('/') >= 0) {
+        const names = name.split('/').map(x => x.trim()).filter(Boolean);
+        // ❗只有「斜杠后面是颜色/型号后缀」才当多色拆（"黑/银"）；
+        //   "相纸 -60张/盒" 这种斜杠是量词（每盒一个价），拆了就毁了 → 用单位字挡掉
+        const unitTail = names.slice(1).some(x => /[张盒个只瓶包袋支片条件套台克斤升米双对数]|\d|ml|cm|mm|kg/i.test(x));
+        if (names.length > 1 && !unitTail && (prices.length === 1 || prices.length === names.length)) {
+          let prefix = names[0];
+          while (prefix.length && COLOR.indexOf(prefix[prefix.length - 1]) >= 0) prefix = prefix.slice(0, -1);
+          names.forEach((n, i) => {
+            const nm = i === 0 ? n : (n.length <= 3 ? prefix + n : n);
+            const pr = prices.length === 1 ? prices[0] : prices[i];
+            if (nm && pr > 0) out.push({ name: nm, price: pr });
+          });
+          return;
+        }
+      }
+      if (prices[0] > 0) out.push({ name, price: prices[0] });
+    });
+    return out;
+  },
+
+  async submitPriceMatch() {
+    const ta = document.getElementById('price-import-text');
+    const el = document.getElementById('price-import-result');
+    const rows = this._parsePriceText(ta ? ta.value : '');
+    if (!rows.length) {
+      el.innerHTML = '<p style="color:var(--danger);font-size:13px;">没解析到「名字 + 价格」。每行一个，价格写在行尾（500 或 ¥500 都行）。</p>';
+      return;
+    }
+    el.innerHTML = '<p style="font-size:13px;color:var(--text-secondary);">正在配对…</p>';
+    try {
+      const r = await API.post('/api/main/price-import/match', { rows });
+      this._priceRows = (r && r.rows) || [];
+      this._priceAll = this._allProducts || [];
+      this._renderPriceMatch();
+    } catch (e) {
+      el.innerHTML = '<p style="color:var(--danger);font-size:13px;">配对失败：' + this._esc(e.message) + '</p>';
+    }
+  },
+
+  _renderPriceMatch() {
+    const el = document.getElementById('price-import-result');
+    if (!el) return;
+    const rows = this._priceRows || [];
+    const hit = rows.filter(r => r.code).length;
+    const BADGE = {
+      alias:     ['已记住',            '#5f5e5a', '#f1efe8'],
+      auto:      ['很可能是这个',      '#0f6e56', '#e1f5ee'],
+      likely:    ['应该是这个',        '#185fa5', '#e6f1fb'],
+      ambiguous: ['有几个像的，挑一个', '#854f0b', '#faeeda'],
+      low:       ['不太确定，你选',    '#a32d2d', '#fcebeb'],
+      none:      ['没找到，你选',      '#a32d2d', '#fcebeb']
+    };
+    let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+      <span style="font-size:13px;">解析出 <b>${rows.length}</b> 行，<b>${hit}</b> 行有候选</span>
+      <button class="btn btn-sm btn-secondary" onclick="ProductsModule._priceCheckAll(true)">全选</button>
+      <button class="btn btn-sm btn-secondary" onclick="ProductsModule._priceCheckAll(false)">全不选</button>
+    </div>`;
+    if (!rows.length) {
+      html += '<p style="font-size:13px;color:var(--text-secondary);">没有可确认的行。</p>';
+      el.innerHTML = html;
+      return;
+    }
+    rows.forEach(r => {
+      const b = BADGE[r.source] || BADGE.none;
+      html += `<div style="border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <input type="checkbox" id="pi-ck-${r.idx}" style="width:16px;height:16px;flex:none;" />
+          <span style="font-size:13px;font-weight:500;">${this._esc(r.raw)}</span>
+          <span style="font-size:13px;color:var(--text-secondary);">¥${r.price}</span>
+          <span style="margin-left:auto;font-size:11px;padding:2px 7px;border-radius:10px;background:${b[2]};color:${b[1]};white-space:nowrap;">${b[0]}</span>
+        </div>
+        <select id="pi-sel-${r.idx}" style="width:100%;margin-top:6px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+          ${this._priceOptions(r)}
+        </select>
+      </div>`;
+    });
+    html += `<div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <button class="btn btn-primary btn-lg" onclick="ProductsModule.confirmPriceImport()">确认导入勾选的</button>
+      <span style="font-size:12px;color:var(--text-light);">没勾选的一律不导入</span>
+    </div>`;
+    el.innerHTML = html;
+  },
+
+  // 下拉：先列算法给的候选（带匹配度），再把全部商品按类型分好，兜底让你自己挑
+  _priceOptions(r) {
+    const all = this._priceAll || [];
+    const seen = {};
+    let cand = '';
+    (r.candidates || []).forEach(c => {
+      seen[c.code] = 1;
+      cand += `<option value="${this._esc(c.code)}"${c.code === r.code ? ' selected' : ''}>${this._esc(c.name)}${c.spec ? '（' + this._esc(c.spec) + '）' : ''} · ${(c.score * 100).toFixed(0)}%</option>`;
+    });
+    if (!cand) cand = '<option value="">（没有候选，从下面选）</option>';
+    const groups = {};
+    all.forEach(p => { if (!seen[p.code]) (groups[p.type || '其它'] = groups[p.type || '其它'] || []).push(p); });
+    let rest = '';
+    Object.keys(groups).forEach(t => {
+      rest += `<optgroup label="${this._esc(t)}">`;
+      groups[t].forEach(p => {
+        rest += `<option value="${this._esc(p.code)}">${this._esc(p.name)}${p.spec ? '（' + this._esc(p.spec) + '）' : ''}</option>`;
+      });
+      rest += '</optgroup>';
+    });
+    return `<optgroup label="系统猜的">${cand}</optgroup>` + rest;
+  },
+
+  _priceCheckAll(v) {
+    (this._priceRows || []).forEach(r => {
+      const ck = document.getElementById('pi-ck-' + r.idx);
+      if (ck) ck.checked = !!v;
+    });
+  },
+
+  async confirmPriceImport() {
+    const dateEl = document.getElementById('price-import-date');
+    const date = dateEl ? dateEl.value : '';
+    const items = [];
+    (this._priceRows || []).forEach(r => {
+      const ck = document.getElementById('pi-ck-' + r.idx);
+      const sel = document.getElementById('pi-sel-' + r.idx);
+      if (!ck || !ck.checked || !sel || !sel.value) return;
+      items.push({ raw: r.raw, price: r.price, code: sel.value });
+    });
+    if (!items.length) { showToast('先勾选要导入的行'); return; }
+    const el = document.getElementById('price-import-result');
+    el.innerHTML = '<p style="font-size:13px;">正在写入行情…</p>';
+    try {
+      const res = await API.post('/api/main/price-import/commit', { date, items });
+      closeModal();
+      await this.loadProducts(this.currentSystem);
+      showToast('导入完成：写入 ' + res.saved + ' 条行情，记住 ' + res.aliased + ' 条对应关系' + (res.failed ? '，失败 ' + res.failed + ' 条' : ''));
+    } catch (e) {
+      el.innerHTML = '<p style="color:var(--danger);font-size:13px;">写入失败：' + this._esc(e.message) + '</p>';
     }
   },
 

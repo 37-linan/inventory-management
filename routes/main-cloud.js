@@ -256,6 +256,127 @@ function ensureHoldTable(db) {
   return holdReady;
 }
 
+// ============================================================================
+// 行情别名对照表（2026-10-01）
+// ----------------------------------------------------------------------------
+// 场景：小程序行情表上写的是厂商全称（"富士拍立得mini13国行 香芋紫"），系统里录
+//      入的是自己起的简称（"拍立得相机mini13" + 规格"香芋紫"）。两边名字对不上。
+// ❌ 纯算法猜会猜错：同款不同色（"mini13香芋紫" vs "mini13蜜瓜绿"）的相似度，
+//    反而比同色不同品牌前缀的更高 → 会把颜色配错，而颜色差 = 价格差。
+// ✅ 口径：算法只负责「给出候选」，**由人确认一次**；确认结果写进本表；
+//        下次同一个名字再来 → 直接命中、不再问。人工成本一次性、逐次递减。
+// ============================================================================
+let priceAliasReady = null;
+function ensurePriceAliasTable(db) {
+  if (!priceAliasReady) {
+    priceAliasReady = db.query(`
+      CREATE TABLE IF NOT EXISTS main_price_alias (
+        id SERIAL PRIMARY KEY,
+        alias_key VARCHAR(200) NOT NULL UNIQUE,
+        alias_raw TEXT NOT NULL DEFAULT '',
+        product_code VARCHAR(100) NOT NULL DEFAULT '',
+        hit_count INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        updated_at TIMESTAMP NOT NULL DEFAULT now()
+      )`)
+      .then(() => db.query('CREATE INDEX IF NOT EXISTS idx_main_price_alias_code ON main_price_alias (product_code)'))
+      .catch(e => { priceAliasReady = null; throw e; });   // 失败允许下次重试
+  }
+  return priceAliasReady;
+}
+
+// 归一化：全角→半角、去掉所有空白与标点、转小写。两边都用同一套，保证可比。
+function normAlias(s) {
+  return String(s == null ? '' : s)
+    .replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/\u3000/g, ' ')
+    .toLowerCase()
+    .replace(/[\s\-_\/\\.,，。、:：;；!！?？~～|·'"“”‘’+*()（）\[\]【】{}<>《》「」]/g, '')
+    .trim();
+}
+
+function aliasBigrams(s) {
+  const out = [];
+  for (let i = 0; i + 1 < s.length; i++) out.push(s.slice(i, i + 2));
+  return out;
+}
+
+// 2-gram Dice 系数：中文短文本相似度的经典做法（不依赖分词）
+function aliasDice(a, b) {
+  if (!a.length || !b.length) return 0;
+  const m = new Map();
+  b.forEach(g => m.set(g, (m.get(g) || 0) + 1));
+  let inter = 0;
+  a.forEach(g => { const c = m.get(g) || 0; if (c > 0) { inter++; m.set(g, c - 1); } });
+  return (2 * inter) / (a.length + b.length);
+}
+
+// 颜色字：行情表里最常用的区分维度（也是价格差最大的维度），冲突必须重罚。
+// 只扫「尾部 4 个字」——颜色几乎总是写在名字末尾（"小米手环10 银" / "…香芋紫"），
+// 这样能避开「红米」（含"红"）、「小米」（含"米"）、「金士顿」（含"金"）这类误伤。
+const ALIAS_COLOR_CHARS = '黑白蓝绿紫粉灰银金红橙黄棕青';
+function colorOf(text) {
+  const n = normAlias(text);
+  for (const ch of n.slice(-4)) { if (ALIAS_COLOR_CHARS.indexOf(ch) >= 0) return ch; }
+  return '';
+}
+
+// 单条候选打分
+// ❗规格（颜色/容量，如「香芋紫」「银色」）是强特征：它决定价格，必须单独加权。
+//   否则「mini13香芋紫」会匹配到「mini13蜜瓜绿」（同款不同色的 2-gram 更像）。
+function aliasScore(raw, p) {
+  const nr = normAlias(raw);
+  if (!nr) return 0;
+  const nameOnly = aliasDice(aliasBigrams(nr), aliasBigrams(normAlias(p.name)));
+  const withSpec = aliasDice(aliasBigrams(nr), aliasBigrams(normAlias(p.name + ' ' + (p.spec || ''))));
+  let score = nameOnly * 0.6 + withSpec * 0.4;
+
+  const spec = normAlias(p.spec);
+  // 纯数字规格（如 "10"）没有区分度，不参与强特征判定
+  if (spec && spec.length >= 2 && !/^\d+(\.\d+)?$/.test(spec)) {
+    if (nr.includes(spec)) {
+      score = score * 0.5 + 0.5;      // 行情名里明确写了这个规格 → 强命中
+    } else {
+      score = score * 0.95;           // ❗行情名里没写规格是常态（如酒不写容量）→ 只轻微扣，
+                                      //   不能减半，否则「奔富407」对上「奔富407 750ml」只有 0.42
+    }
+  }
+
+  // 两边都带颜色且不一致 → 重罚（"小米手环10 黑" 不该配到「银色」那款）
+  const rc = colorOf(raw), cc = colorOf(p.name + ' ' + (p.spec || ''));
+  if (rc && cc && rc !== cc) score *= 0.45;
+
+  return score;
+}
+
+// 给一行行情名找候选：① 查别名表（记住过就直接用）② 否则按相似度打分
+function aliasMatch(raw, products, aliasMap) {
+  const nr = normAlias(raw);
+  const remembered = aliasMap[nr];
+  if (remembered) {
+    const p = products.find(x => String(x.code) === String(remembered));
+    if (p) return { code: p.code, name: p.name, spec: p.spec || '', score: 1, source: 'alias', candidates: [] };
+  }
+  const scored = products
+    .map(p => ({ code: p.code, name: p.name, spec: p.spec || '', score: aliasScore(raw, p) }))
+    .filter(x => x.score >= 0.3)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+  if (!scored.length) return { code: '', name: '', spec: '', score: 0, source: 'none', candidates: [] };
+  const top = scored[0];
+  const near = scored.filter(x => x.score >= top.score - 0.06);
+  // 分档只影响「前端怎么提醒你」——**任何一档都要人点确认**，算法从不自动拍板
+  let source;
+  if (near.length > 1) source = 'ambiguous';        // 有几个像的，你挑一个
+  else if (top.score >= 0.72) source = 'auto';      // 很可能是这个
+  else if (top.score >= 0.45) source = 'likely';    // 应该是这个
+  else source = 'low';                              // 没找到像的，你来选
+  return {
+    code: top.code, name: top.name, spec: top.spec, score: top.score,
+    source, candidates: scored
+  };
+}
+
 // 读寄存表 → { 单号: { order_no, status:'holding'|'sold', hold_date, sold_date, rows[], codes{} } }
 // codes = { 商品编码: 寄存数量 }，供利润计算判断「这个编码是不是寄存在档口了」
 async function loadHoldMap(db) {
@@ -293,6 +414,7 @@ module.exports = function(db) {
     try {
       await ensureSetColumns(db);
       await ensureHoldTable(db);   // 寄存表：利润/总览/台账都要读它（幂等，只有第一次真建）
+      await ensurePriceAliasTable(db);   // 行情别名对照表：导入行情时用（幂等）
       next();
     } catch (e) { next(e); }
   });
@@ -551,6 +673,111 @@ module.exports = function(db) {
         );
       }
       res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ========== 行情导入（粘贴行情表 → 配对 → 逐条确认 → 写行情）==========
+
+  // 配对：传 [{name, price}]，返回每行匹配到的商品 + 候选
+  router.post('/price-import/match', async (req, res) => {
+    try {
+      await ensurePriceAliasTable(db);
+      const rows = Array.isArray(req.body && req.body.rows) ? req.body.rows : [];
+      const prRes = await db.query('SELECT code, name, spec, unit, type FROM main_products');
+      const aliasRes = await db.query('SELECT alias_key, product_code FROM main_price_alias');
+      const aliasMap = {};
+      aliasRes.rows.forEach(a => { aliasMap[a.alias_key] = a.product_code; });
+      const out = rows.map((r, i) => {
+        const name = String((r && r.name) || '').trim();
+        const price = Number((r && r.price) || 0) || 0;
+        const m = aliasMatch(name, prRes.rows, aliasMap);
+        return {
+          idx: (r && r.idx != null) ? r.idx : i,
+          raw: name,
+          price,
+          code: m.code,
+          match_name: m.name,
+          match_spec: m.spec,
+          score: Math.round(m.score * 1000) / 1000,
+          source: m.source,
+          candidates: m.candidates
+        };
+      });
+      res.json({ ok: true, rows: out });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // 确认导入：写行情表 + 记别名（下次同名直接命中）
+  router.post('/price-import/commit', async (req, res) => {
+    try {
+      await ensurePriceAliasTable(db);
+      const date = String((req.body && req.body.date) || '').slice(0, 10) || await todayOf(db);
+      const items = Array.isArray(req.body && req.body.items) ? req.body.items : [];
+      let saved = 0, aliased = 0, failed = 0;
+      const errors = [];
+      for (const it of items) {
+        const code = String((it && it.code) || '').trim();
+        const price = Number((it && it.price) || 0) || 0;
+        const raw = String((it && it.raw) || '').trim();
+        if (!code || !(price > 0)) { failed++; continue; }
+        try {
+          const ex = await db.query('SELECT id FROM main_price_history WHERE product_code = ? AND date = ?', [code, date]);
+          if (ex.rows[0]) {
+            await db.query('UPDATE main_price_history SET price = ? WHERE id = ?', [price, ex.rows[0].id]);
+          } else {
+            await db.query('INSERT INTO main_price_history (product_code, price, date) VALUES (?, ?, ?)', [code, price, date]);
+          }
+          saved++;
+          const key = normAlias(raw);
+          if (key) {
+            await db.query(
+              `INSERT INTO main_price_alias (alias_key, alias_raw, product_code, hit_count) VALUES (?, ?, ?, 1)
+               ON CONFLICT (alias_key) DO UPDATE SET product_code = EXCLUDED.product_code,
+                 alias_raw = EXCLUDED.alias_raw,
+                 hit_count = main_price_alias.hit_count + 1,
+                 updated_at = now()`,
+              [key, raw, code]
+            );
+            aliased++;
+          }
+        } catch (e) {
+          failed++;
+          errors.push(raw || code);
+        }
+      }
+      res.json({ ok: true, date, saved, aliased, failed, errors: errors.slice(0, 10) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // 别名对照表（查看 / 删除）
+  router.get('/price-alias', async (req, res) => {
+    try {
+      await ensurePriceAliasTable(db);
+      const r = await db.query(
+        `SELECT a.id, a.alias_key, a.alias_raw, a.product_code, a.hit_count,
+                to_char(a.updated_at,'YYYY-MM-DD HH24:MI') AS updated_at,
+                p.name AS product_name, p.spec AS product_spec
+         FROM main_price_alias a
+         LEFT JOIN main_products p ON p.code = a.product_code
+         ORDER BY a.updated_at DESC, a.id DESC`
+      );
+      res.json(r.rows);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  router.delete('/price-alias/:id', async (req, res) => {
+    try {
+      await ensurePriceAliasTable(db);
+      await db.query('DELETE FROM main_price_alias WHERE id = ?', [req.params.id]);
+      res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
