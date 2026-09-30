@@ -59,6 +59,13 @@
 - ❗**颜色冲突重罚 ×0.45**：只扫**尾部 4 字**取颜色字（避开"红米/小米"误伤）
 - 接口 `POST /price-import/match`、`POST /price-import/commit`、`GET /price-alias`、`DELETE /price-alias/:id`；表 `main_price_alias`
 - 前端 `products.js` 工具栏「📊 导入行情」→ `showPriceImport/_parsePriceText/submitPriceMatch/_renderPriceMatch/confirmPriceImport`
+- ❗❗**写行情必须同时写 `product_id`**（10-01 修 bug）：商品表**行情图是按 `product_id` 查的**（`/price-history/:code?product_id=`），只写 `product_code` → 图上显示「暂无价格数据」
+  - ① `/price-import/commit` 按 code 查 `main_products.id` 一并 INSERT；UPDATE 用 `COALESCE(product_id, ?)` 补空
+  - ② `POST /price-history`（补录弹窗；「单利润明细→补录行情」那条前端**不传 id**）→ 没传时按 code 补
+  - ③ 读接口 `/price-history/:code` 与 `/latest` 按 id 查时统一 `WHERE product_id = ? OR product_code = ?`（兜底历史 null 行）
+  - ⚠️ **取价/利润不受影响**（`loadPriceMap` 一直按 `product_code` 查，金额始终对）——这只是**图**的问题
+  - 历史回填：`UPDATE main_price_history h SET product_id = (SELECT p.id FROM main_products p WHERE p.code = h.product_code LIMIT 1) WHERE h.product_id IS NULL`
+  - 自检 `.workbuddy/tmp/price-pid-test.js`（22 项，含**真跑 `_seriesFromHistory`+`_drawSVG`** 断言不出现「暂无价格数据」）
 - ❗`_parsePriceText` 取**行尾**价格表达式；斜杠只在**后段是颜色型号**时才拆多行（`相纸 -60张/盒` 的斜杠是量词，不拆）
 
 ### ❗❗用户工作流（10-01 定）：截图 → 我初筛 → 给可导入文字
