@@ -4,6 +4,18 @@
 ## 概况
 - 库存工作台，**只维护主系统**；Node22 + Express + pg + PM2 + 原生 JS；云路由 `routes/main-cloud.js`
 
+## 访问密码 & 权限（三级 · 纯前端）
+- 入口 `public/js/app.js`：`checkLogin()` 比对密码 → `sessionStorage.inventory_role` → `applyRoleClass()` 往 `document.body` 挂 class
+  - `2312666` → `admin`（全部权限，**不加任何限制 class**）
+  - `2312` → `viewer`：只读 + **内容打码**
+  - `666` → `limited`：只读 + `perm-limited`（隐藏台账/库存看板入口，只能进产品信息表）
+- ❗**打码**（10-01 加）：`body.perm-mask` + 元素 class `mask-sensitive` → `> *{filter:blur(7px)}` + `::after` 盖「🔒 该内容无权查看」
+  - 只在 `applyRoleClass()` 里 `if (role && role !== 'admin') body.classList.add('perm-mask')`
+  - 目标 4 块（`transactions.js`）：**入库记录表 / 出库记录表 = 给那两张 `.card` 加 `mask-sensitive`**；**信息台账 / 成本台账 = 给容器 `#transactions-content-${system}` 加 `mask-sensitive`**
+  - ❗❗容器级打码**必须**在 `renderInboundTab`/`renderOutboundTab` 里 `classList.remove('mask-sensitive')`，否则切回登记单会把表单一起糊住
+  - ❗这是**前端看门**（防误操作，不防技术绕过）；改密码/改可见范围都在 `app.js` + `style.css`
+  - 自检 `.workbuddy/tmp/perm-mask-test.js`（40 项：CSS 规则 / 四角色 class / 四块标记 / 切页不残留 / 源码完整性）
+
 ## 运维 & 上线
 - 服务器 `211.159.186.87`(ubuntu)，`/home/ubuntu/inventory-app/`，PM2 `inventory-app`，密钥 `C:/Users/nan/.workbuddy/tencent-key.pem`
 - **https://nanyishangmao.cn**（首选）；`:3000` 手机扫码废（非安全上下文 → 摄像头禁）
