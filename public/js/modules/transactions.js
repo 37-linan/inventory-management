@@ -883,6 +883,8 @@ const TransactionsModule = {
       let detailRows = '';
       if (res.detail && res.detail.length) {
         detailRows = res.detail.map((r, i) => {
+          // 这行是不是「档口寄存 · 已卖出」：它的取价日是**卖出当天**，不是出库次日
+          const isHoldSoldRow = !!(res.hold_sold && (res.hold_codes || []).includes(r.code));
           // 套装（2026-09-23）：同一套装的多个编码合成一套，销售额只记在「代表行」上，
           // 其余组成商品标出「组成」，避免看起来像被漏算了
           const setTag = r.is_set
@@ -903,7 +905,7 @@ const TransactionsModule = {
                     ? '<span class="badge badge-stock-low" title="出库次日行情还没到，明天录价后自动重算">待次日行情</span>'
                     : (r.next_day_price > 0
                         ? (isBackfill
-                            ? '<span class="badge" style="background:#fff3e0;color:#b26a00;" title="取价日＝出库次日。取价日当天没单独录这个商品的行情，就按「哪天没录就沿用前一天的价」沿用了更早录入的价；想单独录取价日的价，点「改行情」">沿用价</span>'
+                            ? `<span class="badge" style="background:#fff3e0;color:#b26a00;" title="取价日${isHoldSoldRow ? '＝卖出当天' : '＝出库次日'}。取价日当天没单独录这个商品的行情，就按「哪天没录就沿用前一天的价」沿用了更早录入的价；想单独录取价日的价，点「改行情」">沿用价</span>`
                             : '<span class="badge badge-stock-normal">已算</span>')
                         : '<span class="badge badge-stock-low">待行情</span>'))
                 : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>');
@@ -915,7 +917,7 @@ const TransactionsModule = {
                 <div style="font-size:11px;color:var(--text-secondary);">本单入库 ${r.in_qty}，本单已出 ${r.out_qty}</div>
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
-                ${r.out_date ? `<div>出库日：<strong>${r.out_date}</strong></div><div>取价日：<strong>${r.next_day}</strong><span style="font-size:10px;color:var(--text-light);">（次日）</span></div>` : '<span style="color:var(--text-light);">—</span>'}
+                ${r.out_date ? `<div>出库日：<strong>${r.out_date}</strong></div><div>取价日：<strong>${r.next_day}</strong><span style="font-size:10px;color:${isHoldSoldRow ? '#b26a00' : 'var(--text-light)'};">${isHoldSoldRow ? '（卖出当天）' : '（次日）'}</span></div>` : '<span style="color:var(--text-light);">—</span>'}
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
                 ${r.next_day_price > 0
@@ -956,7 +958,7 @@ const TransactionsModule = {
           <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);">
             <div>订单号：<strong style="color:var(--primary);">${orderNo}</strong></div>
             <div>成本（整单金额）：<strong>¥${cost.toFixed(2)}</strong></div>
-            <div>销售（出库次日行情 × 本单数量）：<strong>${summaryText}</strong></div>
+            <div>销售（取价日行情 × 本单数量）：<strong>${summaryText}</strong></div>
             <div>单利润：${res.has_out
               ? `<strong style="color:${profitColor};font-size:16px;">${profit >= 0 ? '+' : ''}¥${profit.toFixed(2)}</strong>`
               : (res.holding
@@ -971,7 +973,7 @@ const TransactionsModule = {
               <thead>
                 <tr style="background:var(--bg);">
                   <th style="padding:8px;text-align:left;">商品</th>
-                  <th style="padding:8px;text-align:left;">出库/次日</th>
+                  <th style="padding:8px;text-align:left;">出库/取价日</th>
                   <th style="padding:8px;text-align:left;">行情</th>
                   <th style="padding:8px;text-align:left;">销售</th>
                   <th style="padding:8px;">状态</th>
@@ -982,9 +984,9 @@ const TransactionsModule = {
           </div>
           <p style="margin-top:12px;padding:10px;background:rgba(26,115,232,0.06);border-left:3px solid var(--primary);font-size:12px;color:var(--text-secondary);line-height:1.6;">
             <strong>计算规则：</strong>成本 = 整单金额（首个商品填的金额）；销售 = 各商品<b>取价日</b>当天的行情价 × 该商品在本单内的全部数量；利润 = 销售 - 成本。<br>
-            <strong>取价日：</strong>＝ <b>出库日的次日</b>。哪天没单独录这个商品的行情，就按「<b>哪天没录就沿用前一天的价</b>」往前沿用 —— 所以取价日仍是出库次日，只是这个价来自更早录入的那一次（明细里会标出沿用自哪天）。<br>
+            <strong>取价日：</strong>普通出库 ＝ <b>出库日的次日</b>；<b>档口寄存后卖出</b>的商品 ＝ <b>卖出当天</b>（点「已卖出」时选的那天）。哪天没单独录这个商品的行情，就按「<b>哪天没录就沿用前一天的价</b>」往前沿用 —— 取价日不变，只是这个价来自更早录入的那一次（明细里会标出沿用自哪天）。<br>
             <strong>怎么算「已出库」：</strong>按同一物品编码的入库时间<b>先进先出</b>——出库量从最早入库的那批开始扣，扣到了本单这批才算本单已出库（因为出库记录里没登记属于哪一张入库单）。<br>
-            ${res.hold_sold ? `<strong>寄存计价：</strong>这一单是<b>档口寄存</b>后卖出的，寄存在档口的商品按<b>卖出日 ${res.hold_sold}</b> 的行情价计算（没寄存的商品仍按出库日）。` : ''}
+            ${res.hold_sold ? `<strong>寄存计价：</strong>这一单是<b>档口寄存</b>后卖出的 —— 寄存在档口的商品按<b>卖出当天（${res.hold_sold}）</b>的行情价计算；没寄存的商品仍按「出库日的次日」。` : ''}
           </p>
         </div>
       `;

@@ -80,28 +80,41 @@ async function todayOf(db) {
   return r.rows[0].t;
 }
 
-// 行情价：① 出库日次日(D+1)优先 ② 次日没录 → 出库日当天/之前最近一天（不往后找）
+// 行情价：① 取价日当天优先 ② 取价日没录 → 取价日之前最近一天（不往后找）
 // 返回 { price, date, fromNextDay } 或 null
+// ❗取价日怎么算（2026-10-02 用户拍板，**两套口径**）：
+//   · 普通出库  → 取价日 = 出库日的次日(D+1)     （sameDay 不传 / falsy）
+//   · 寄存已卖出 → 取价日 = 卖出当天(sold_date 本身)（sameDay = true）
+//   用户原话：「寄存的取价口径就跟其他的不一样，我点击哪天卖出就那天的行情，
+//             而不是取卖出去日的次日」。
 // 语义说明（和用户对齐过的规则）：
 //   用户规则 = 「哪天没录行情，就沿用前一天的价格」→ 某天的有效价 = 往前找最近一次录入的价。
-//   出库的取价日恒为「出库日次日」(D+1)；D+1 那天没单独录，就沿用它之前最近一次录入的价。
-//   所以：`date` 是「价实际来自行情表的哪一天」，而 D+1（逻辑取价日）由调用方用
-//   nextDayOf(outDay) 给出 —— 明细里应当把「取价日 = D+1」作为主口径展示，
-//   「沿用自哪天」只作附注，避免看着像"系统取了出库当天的价"。
+//   取价日那天没单独录，就沿用它之前最近一次录入的价，**但取价日不变**。
+//   所以：`date` 是「价实际来自行情表的哪一天」，取价日由 priceDayPick() 算出；
+//   明细里应当把「取价日」作为主口径展示，「沿用自哪天」只作附注，
+//   避免看着像"系统取了当天的价"。
 // list 已按「日期升序、同日按录入时间升序」排好 → 同一天的最后一条就是最新生效价。
-function pickMarketPrice(priceMap, code, outDay) {
-  if (!outDay) return null;
+function pickMarketPrice(priceMap, code, baseDay, sameDay) {
+  if (!baseDay) return null;
   const list = priceMap[code] || [];
   if (list.length === 0) return null;
-  const nd = nextDayOf(outDay);
+  const nd = priceDayPick(baseDay, sameDay);   // 取价日：寄存卖出 = 卖出当天；普通 = 次日
   let hit = null, before = null;
   for (const x of list) {
-    if (x.d === nd) hit = x;              // 次日有录 → 用次日（同日多行取最后一条）
-    else if (x.d < nd) before = x;        // x.d <= outDay：往前回退，取最近一次
-    else break;                           // x.d > nd：之后录的价不参与（不往后找）
+    if (x.d === nd) hit = x;              // 取价日当天有录 → 用它（同日多行取最后一条）
+    else if (x.d < nd) before = x;        // x.d < 取价日：往前回退，取最近一次
+    else break;                           // x.d > 取价日：之后录的价不参与（不往后找）
   }
   if (hit) return { price: hit.p, date: nd, fromNextDay: true };
   return before ? { price: before.p, date: before.d, fromNextDay: false } : null;
+}
+
+// 取价日 —— 全站唯一的算法，别在别处再算一遍
+//   baseDay：普通出库 = 出库日；寄存已卖出 = 卖出日
+//   sameDay：true → 取价日就是 baseDay 当天（寄存已卖出）；false → baseDay 的次日（普通出库）
+function priceDayPick(baseDay, sameDay) {
+  if (!baseDay) return '';
+  return sameDay ? baseDay : nextDayOf(baseDay);
 }
 
 // ============================================================================
@@ -229,7 +242,9 @@ function ensureOpexTable(db) {
 // 场景：把货发给档口寄存 —— 系统里这些商品确实「已出库」，但并没有产生销售。
 //      不处理的话会按「出库日」的行情价算出一笔并不存在的盈亏。
 // ✅ 口径：登记为寄存的单，没卖出前**整单压着、不计入盈亏**；点「已卖出」后，
-//        被寄存的商品改按**卖出日**的行情价计价（没寄存的商品仍按出库日），
+//        被寄存的商品改按**卖出当天**的行情价计价（❗取价日 = 卖出日当天，**不用次日**；
+//        没寄存的商品仍按「出库日次日」）—— 2026-10-02 用户明确的口径：
+//        「寄存的取价口径就跟其他的不一样，我点击哪天卖出就那天的行情」。
 //        整单重新回到盈亏统计里。
 // 存法：按「单 + 商品编码」逐条存（同一单可多次登记，重复登记覆盖不累加）；
 //      状态按单统一 —— 该单所有寄存行都是 sold 才算「已卖出」。
@@ -1169,8 +1184,10 @@ module.exports = function(db) {
       const holdCodes = hm ? hm.codes : {};
       const holdSoldDay = (hm && hm.status === 'sold') ? (hm.sold_date || '') : '';
       const isHolding = !!(hm && hm.status === 'holding');
-      // 某个编码该用哪一天取行情：已卖出且它寄存在档口 → 卖出日；否则出库日
-      const priceDayOf = (code, outDay) => (holdSoldDay && holdCodes[code]) ? holdSoldDay : outDay;
+      // 这个编码是不是「寄存在档口、且已经卖出」→ 取价口径换成「卖出当天」（不是次日）
+      const holdSoldSameDay = (code) => !!(holdSoldDay && holdCodes[code]);
+      // 某个编码该用哪一天做基准取行情：已卖出且它寄存在档口 → 卖出日；否则出库日
+      const priceDayOf = (code, outDay) => holdSoldSameDay(code) ? holdSoldDay : outDay;
 
       let totalSale = 0;
       let anyShipped = false;  // 本单是否有商品出库过（含只出了一部分的情况）
@@ -1217,14 +1234,15 @@ module.exports = function(db) {
             // 明天录了次日价会自动改用次日价重算，前端提示「待次日行情」
             await_price: false
           };
-          const priceDay = priceDayOf(x.code, x.outDate);   // 基准日：寄存已卖出 → 卖出日；否则出库日
-          row.base_day = priceDay;                          // 基准日（出库日 / 卖出日）
-          row.next_day = priceDay ? nextDayOf(priceDay) : '';
-          row.price_day = row.next_day;                     // ❗取价日 = 基准日次日（与 /ledger 的 price_day 同义，别写成基准日）
-          row.await_price = !!(x.outQty > 0 && row.next_day && row.next_day > today);
+          const holdSameDay = holdSoldSameDay(x.code);       // 寄存已卖出 → 取价日 = 卖出当天
+          const priceDay = priceDayOf(x.code, x.outDate);    // 基准日：寄存已卖出 → 卖出日；否则出库日
+          row.base_day = priceDay;                           // 基准日（出库日 / 卖出日）
+          row.next_day = priceDayPick(priceDay, holdSameDay); // 取价日（普通=基准日次日；寄存卖出=卖出当天）
+          row.price_day = row.next_day;                      // ❗取价日（与 /ledger 的 price_day 同义）
+          row.await_price = !!(x.outQty > 0 && row.price_day && row.price_day > today);
 
           if (x.outQty > 0) {
-            const mp = pickMarketPrice(priceMap, x.code, priceDay);
+            const mp = pickMarketPrice(priceMap, x.code, priceDay, holdSameDay);
             const salePrice = mp ? mp.price : 0;
             if (mp) row.price_date = mp.date;
             row.next_day_price = salePrice;
@@ -1239,12 +1257,14 @@ module.exports = function(db) {
         // ---- 套装：组内任一条出库 → 这一套视为已出库；整套只算一次价 ----
         const setOut = rows.some(x => x.outQty > 0);
         const units = setUnitsOf(g);                       // 套数 = 组内第一个编码的数量合计
-        const setDay = priceDayOf(g.items[0].product_code, groupOutDate);   // 寄存已卖出 → 按卖出日取价
+        const setCode0 = g.items[0].product_code;
+        const setSameDay = holdSoldSameDay(setCode0);                     // 寄存已卖出 → 取价日 = 卖出当天
+        const setDay = priceDayOf(setCode0, groupOutDate);                // 寄存已卖出 → 按卖出日取价
         const mp = (setOut && setDay)
-          ? pickMarketPrice(priceMap, g.items[0].product_code, setDay)
+          ? pickMarketPrice(priceMap, setCode0, setDay, setSameDay)
           : null;
         const salePrice = mp ? mp.price : 0;
-        const awaitFlag = !!(setOut && setDay && nextDayOf(setDay) > today);
+        const awaitFlag = !!(setOut && setDay && priceDayPick(setDay, setSameDay) > today);
         if (setOut) {
           totalSale += salePrice * units;                  // ✅ 一套只算一次（不再按每个编码各算一遍）
         }
@@ -1253,9 +1273,9 @@ module.exports = function(db) {
             code: x.code, name: nameMap[x.code] || x.code,
             in_qty: x.inQty, out_qty: x.outQty,
             out_date: i === 0 ? (x.outDate || groupOutDate) : x.outDate,
-            next_day: setDay ? nextDayOf(setDay) : '',
+            next_day: priceDayPick(setDay, setSameDay),
             base_day: setDay,
-            price_day: setDay ? nextDayOf(setDay) : '',
+            price_day: priceDayPick(setDay, setSameDay),
             price_date: mp ? mp.date : '',
             next_day_price: salePrice,
             // 销售额只记在「代表行」（组内第一条）上，其余组成商品不再单独计价
@@ -1375,19 +1395,20 @@ module.exports = function(db) {
           if (!hit) return;   // 整单已出库时不该发生，保险起见
           // 计价用的日期：寄存在档口且已卖出 → 卖出日；否则出库日
           const code0 = g.items[0].product_code;
-          const priceDay = (holdSoldDay && holdCodes[code0]) ? holdSoldDay : hit.a.out_date;
+          const holdSameDay = !!(holdSoldDay && holdCodes[code0]);   // 寄存已卖出 → 取价日 = 卖出当天
+          const priceDay = holdSameDay ? holdSoldDay : hit.a.out_date;
           if (priceDay > lastDay) lastDay = priceDay;
-          // 计价日的次日还没到（今天才出库 / 今天才卖）→ 收益只是暂计，明天录价后自动重算
-          if (priceDay && nextDayOf(priceDay) > today) awaitFlag = true;
+          // 取价日还没到（普通：出库次日；寄存卖出：卖出当天）→ 收益只是暂计，录价后自动重算
+          if (priceDay && priceDayPick(priceDay, holdSameDay) > today) awaitFlag = true;
 
           if (g.isSet) {
             // 套装：套数 = 组内第一个编码的数量合计，行情取第一个编码的价 → 一套只算一次
             const units = setUnitsOf(g);
-            const mp = pickMarketPrice(priceMap, code0, priceDay);
+            const mp = pickMarketPrice(priceMap, code0, priceDay, holdSameDay);
             if (mp) sale += mp.price * units;
           } else {
             const it = g.items[0];
-            const mp = pickMarketPrice(priceMap, it.product_code, priceDay);
+            const mp = pickMarketPrice(priceMap, it.product_code, priceDay, holdSameDay);
             if (mp) sale += mp.price * (Number(it.quantity) || 0);
           }
         });
@@ -1811,9 +1832,15 @@ module.exports = function(db) {
       const setMap = await loadSetNameMap(db);
       // 寄存：发到档口、还没卖的商品，出库台账里先不认销售额（还没产生销售）
       const holdMap = await loadHoldMap(db);
-      const holdStatusOfCode = {};
+      // 编码 → { status, sold_day }：holding = 寄存中；sold = 已卖出（取价日换成**卖出当天**）
+      // 同一编码出现在多单时，已卖出的那条优先（它带卖出日，能覆盖 holding 的旧状态）
+      const holdInfoOfCode = {};
       Object.values(holdMap).forEach(g => {
-        Object.keys(g.codes).forEach(c => { holdStatusOfCode[c] = g.status; });
+        Object.keys(g.codes).forEach(c => {
+          const cur = { status: g.status, sold_day: g.sold_date || '' };
+          const prev = holdInfoOfCode[c];
+          if (!prev || (cur.status === 'sold' && prev.status !== 'sold')) holdInfoOfCode[c] = cur;
+        });
       });
 
       const setKeyOf = ob => (setMap[ob.product_code] || '') + '||' + (ob.out_day || '');
@@ -1823,7 +1850,7 @@ module.exports = function(db) {
         ob.set_name = setMap[ob.product_code] || '';
         ob.is_set = !!ob.set_name;
         ob.set_member = false;
-        ob.hold_status = holdStatusOfCode[ob.product_code] || '';   // holding = 发到档口寄存、还没卖
+        ob.hold_status = (holdInfoOfCode[ob.product_code] || {}).status || '';   // holding = 发到档口寄存、还没卖
         if (!ob.is_set || !ob.out_day) return;
         const k = setKeyOf(ob);
         if (setLeaderId[k] === undefined || ob.id < setLeaderId[k]) setLeaderId[k] = ob.id;
@@ -1860,7 +1887,12 @@ module.exports = function(db) {
           continue;
         }
 
-        const mp = pickMarketPrice(priceMap, ob.product_code, outDate);
+        // 取价口径与「单利润 / 盈亏总览」完全一致：
+        //   普通出库 → 取价日 = 出库次日；寄存已卖出 → 取价日 = 卖出当天
+        const hi = holdInfoOfCode[ob.product_code] || {};
+        const holdSameDay = !!(hi.status === 'sold' && hi.sold_day);
+        const baseDay = holdSameDay ? hi.sold_day : outDate;
+        const mp = pickMarketPrice(priceMap, ob.product_code, baseDay, holdSameDay);
         const salePrice = mp ? mp.price : 0;
         // 套装代表条目：销售额 = 套价 × 套数；普通商品：行情价 × 出库数量
         const units = ob.is_set
@@ -1870,7 +1902,7 @@ module.exports = function(db) {
         ob.sale_price = Number(totalSale.toFixed(2));   // 整单销售额
         ob.profit = Number((totalSale - totalCost).toFixed(2));
         ob.price_date = mp ? mp.date : '';              // 价实际来自行情表的哪一天（沿用时有可能是更早的天）
-        ob.price_day = nextDayOf(outDate);              // 逻辑取价日 = 出库次日（对外口径按这个显示）
+        ob.price_day = priceDayPick(baseDay, holdSameDay);   // 逻辑取价日：普通=出库次日；寄存卖出=卖出当天
         if (ob.is_set) ob.set_units = units;
       }
 
