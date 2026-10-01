@@ -2,7 +2,7 @@
 
 // 网站访问密码与权限
 // admin: 2312666  全部权限
-// viewer: 2312    只读，可看整个系统
+// viewer: 2312    只读；入库记录表 / 出库记录表 / 信息台账 / 成本台账 打码不可看
 // limited: 666    只读，只能看产品信息表
 
 function getRole() {
@@ -38,10 +38,12 @@ function checkLogin() {
 // 应用权限 class 到 body（CSS 统一控制只读/隐藏）
 function applyRoleClass() {
   const body = document.body;
-  body.classList.remove('perm-readonly', 'perm-limited');
+  body.classList.remove('perm-readonly', 'perm-limited', 'perm-mask');
   const role = getRole();
   if (role === 'viewer' || role === 'limited') body.classList.add('perm-readonly');
   if (role === 'limited') body.classList.add('perm-limited');
+  // 打码：非管理员看不到被标记的区域（入库记录表 / 出库记录表 / 信息台账 / 成本台账）
+  if (role && role !== 'admin') body.classList.add('perm-mask');
 }
 
 let currentPage = 'main-products';

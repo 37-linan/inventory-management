@@ -176,6 +176,7 @@ const TransactionsModule = {
   async renderInboundTab(system) {
     this.inboundImages = [];
     const container = document.getElementById(`transactions-content-${system}`);
+    container.classList.remove('mask-sensitive');   // 入库登记单整块不打码（只打码下面的记录表）
 
     container.innerHTML = `
       <div class="card" style="border:2px solid #e6f4ea;">
@@ -235,7 +236,7 @@ const TransactionsModule = {
         </div>
       </div>
       <!-- 入库记录表 -->
-      <div class="card" style="margin-top:16px;">
+      <div class="card mask-sensitive" style="margin-top:16px;">
         <div class="card-header">
           <h3>入库记录表</h3>
           <div style="display:flex;align-items:center;gap:10px;margin-left:auto;">
@@ -1181,6 +1182,7 @@ const TransactionsModule = {
   async renderOutboundTab(system) {
     this.outboundImages = [];
     const container = document.getElementById(`transactions-content-${system}`);
+    container.classList.remove('mask-sensitive');   // 出库信息单整块不打码（只打码下面的记录表）
 
     container.innerHTML = `
       <div class="card" style="border:2px solid #fce8e6;">
@@ -1226,7 +1228,7 @@ const TransactionsModule = {
         </div>
       </div>
       <!-- 出库记录表 -->
-      <div class="card" style="margin-top:16px;">
+      <div class="card mask-sensitive" style="margin-top:16px;">
         <div class="card-header">
           <h3>出库记录表</h3>
           <div style="display:flex;align-items:center;gap:10px;">
@@ -2477,6 +2479,7 @@ const TransactionsModule = {
   // ================================================================
   async renderLedgerTab(system) {
     const container = document.getElementById(`transactions-content-${system}`);
+    container.classList.add('mask-sensitive');   // 信息台账：非管理员整块打码
     container.innerHTML = '<div class="card"><div class="card-body" style="text-align:center;padding:30px;">加载台账数据...</div></div>';
 
     try {
@@ -3017,6 +3020,7 @@ const TransactionsModule = {
     const container = document.getElementById(`transactions-content-${system}`);
     if (!container) return;
     this._opexSystem = system;
+    container.classList.add('mask-sensitive');   // 成本台账：非管理员整块打码
     container.innerHTML = `
       <div class="card" style="border:2px solid #fff3e0;">
         <div class="card-header" style="background:#fff3e0;">

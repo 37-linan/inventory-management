@@ -136,6 +136,35 @@ body.perm-limited .nav-item[data-page="main-inventory"] {
   display: none !important;
 }
 
+/* ========== 内容打码（非管理员）==========
+   夹住 .mask-sensitive 的整块内容会被模糊成马赛克并盖住，不可读也点不动。
+   当前用途：入库记录表 / 出库记录表 / 信息台账 / 成本台账 */
+body.perm-mask .mask-sensitive {
+  position: relative;
+}
+body.perm-mask .mask-sensitive > * {
+  filter: blur(7px);
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.perm-mask .mask-sensitive::after {
+  content: '🔒 该内容无权查看';
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: #6b7280;
+  background: rgba(245, 247, 250, 0.45);
+  border-radius: var(--radius);
+  pointer-events: none;
+}
+
 body {
   font-family: 'Microsoft YaHei', '微软雅黑', 'PingFang SC', 'Hiragino Sans GB', 'Source Han Sans CN', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', '黑体', 'SimHei', '宋体', 'SimSun', sans-serif;
   background: var(--bg);
