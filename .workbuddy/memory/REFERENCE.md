@@ -28,17 +28,22 @@
 - ⚠️ node 进程写项目文件同样 EPERM → 脚本输出**一律先落 `.workbuddy/tmp/`**（该目录不入 git）
 
 ## 取价 + 利润口径（全站唯一）
-- `loadPriceMap()` + `pickMarketPrice(map, code, 出库日)`：① 出库日**次日(D+1)**有价 → 用次日价 ② 否则用「<= 出库日最近一天」价，**不往后找**。`/order-profit`、`/dashboard`、`/ledger` **必须共用**
-- ❗「次日」要 `main_price_history` **真有那一行**才生效；`chart.js _fillMissingPrices` 只**画图补线、不落库**
-- ❗❗**对外只有一个词：「取价日」= 出库次日(D+1)**，恒成立。那天没录 → 价往前沿用，**但取价日不变**
-  - UI 列名「出库/取价日」+ 徽章「沿用价」+ `carryNote`；❌ **绝不写「取自 09-24」**（用户会理解成"用了出库当天的价"）
-- ❗字段：`base_day`=基准日（出库日；寄存已卖出=卖出日）；`price_day`=`next_day`=**取价日**；`price_date`=价**实际来自**哪天
-- ❗补录弹窗默认日期 = **取价日**（`bf-price-date`）
+- 统一入口 `pickMarketPrice(map, code, baseDay, sameDay)`，**取价日**由 `priceDayPick(baseDay, sameDay)` 决定：
+  - `sameDay=false`（**普通出库**）→ 取价日 = **出库日次日(D+1)**
+  - `sameDay=true`（**寄存已卖出**）→ 取价日 = **卖出当天**（用户 2026-10-02 拍板，别再混）
+- 取价规则：① 取价日**当天**有价 → 用它 ② 否则用「**< 取价日** 最近一天」的价，**不往后找**（= 用户说的「哪天没录就沿用前一天」）
+  - ⚠️「取价日当天有价」要 `main_price_history` **真有那一行**才叫命中；`chart.js _fillMissingPrices` 只**画图补线、不落库**
+- ❗❗**对外只有一个词：「取价日」**。那天没录 → 价往前沿用，**但取价日不变**
+  - UI 列名「出库/取价日」；寄存已卖出的明细行标「（卖出当天）」而非「（次日）」；徽章「沿用价」+ `carryNote`；❌ **绝不写「取自 09-24」**
+- ❗字段：`base_day`=基准日（普通=出库日；寄存已卖出=卖出日）；`price_day`=`next_day`=**取价日**；`price_date`=价**实际来自**哪天；`hold_sold`=卖出那天（前端靠它标「（卖出当天）」）
+- ❗**改口径必须同时改三处**：`/order-profit`（普通 + 套装两条分支）、`/dashboard`、`/ledger`；⚠️ 台账里套装「组成条目」`price_day` **本来就留空**（销售额并到代表行），核对时别误判
+- ❗补录弹窗默认日期 = **取价日**（`bf-price-date` / `_showBackfillPrice` / `_saveBackfillPrice`）
 - ❗❗**同日重复录入确定性**：`loadPriceMap` 必须 `ORDER BY product_code, date, created_at, id`；`pickMarketPrice` 两分支统一为「同一天取最后录入那条」
 - ❗❗**「退回更早」≡「次日沿用」，数值完全等价**（09-27 全量 29/29 行零差异）→ 用户问「为什么取 24 号」，**永远是显示口径问题，别怀疑算法**
 - **真 bug 判据 = 取价日当天有行却没取到**
 - 成本 = 整单金额（首商品 `purchase_price`）；只算**已出库**的单；总览按**出库日期**归周（周一起）；**盈利红/亏损绿**；盈亏率统一 `_rateTxt(pnl, invest)`
-- 取不到行情 → 明细「待行情」¥0；补录入口 `_showBackfillPrice/_saveBackfillPrice`
+- 取不到行情 → 明细「待行情」¥0
+- 自检：`tmp/hold-day-test.js`（51 项：两套口径 + 沿用 + 套装 + 三处一致）、`tmp/price-day-test.js`（20 项：真实数据证明**普通出库金额零差异**）、`tmp/live-verify-1002.js`（线上只读核对）
 
 ## ⚠️ 出库归属 = FIFO + 整单口径（别再改回去）
 - `main_outbound.order_no` 是快递单号/"送货上门"，**与入库单号无关联**；❌ 按编码全局汇总会让新入库的单被历史出库凭空算出销售
@@ -146,4 +151,25 @@
 - 前端：Node + `vm` + 最小 DOM stub 真跑模块；后端：vm 加载路由 → `router.stack.find(l => l.route.path === '/xxx').route.stack[0].handle` 取**真实 handler** + mock `db.query`（按 SQL 特征分流）+ stub `res.json` → 不启服务验证完整逻辑，还能**一次验证多处口径一致**
   - 也可从源码**文本切片抠出纯函数**（如 `price-import-match-test` 抠 `aliasMatch`），保证「测的就是跑的那份」
 - ❗❗**新增数据库表后旧测试会整片挂掉**（严格 mock 里 `throw new Error('未 mock 的 SQL')` → handler 被 catch → 500，看着像功能坏了）→ 修法：严格 mock 加 `if (/main_hold/i.test(s)) return { rows: [] };` + `CREATE/ALTER TABLE` 兜底
-- **铁律：给路由加新表后，必须重跑 `tmp/` 下全部 `*test*.js`（现 19 个）**；改前端交互后同样全跑一遍（一条 `for` 循环约十秒）
+- **铁律：给路由加新表后，必须重跑 `tmp/` 下全部 `*test*.js`（现 21+ 个）**；改前端交互后同样全跑一遍（一条 `for` 循环约十秒）
+
+## 访问密码 & 权限（三级 · 纯前端）10-01
+- `app.js checkLogin()` 比对密码 → `sessionStorage.inventory_role` → `applyRoleClass()` 给 `document.body` 挂 class
+  - `2312666` → `admin`（**不加任何限制 class**）
+  - `2312` → `viewer`：只读 + **内容打码**
+  - `666` → `limited`：只读 + `perm-limited`（隐藏台账/库存看板入口，只能进产品信息表）
+- **打码**：`body.perm-mask` + 元素 class `mask-sensitive` → `style.css` 里 `.perm-mask .mask-sensitive{...}`：子元素 `filter:blur(7px)` + `::after` 盖「🔒 该内容无权查看」
+  - 加 class 只在 `applyRoleClass()`：`if (role && role !== 'admin') body.classList.add('perm-mask')`
+  - 目标 4 块（`transactions.js`）：**入库记录表 / 出库记录表 = 给那两张 `.card` 加 `mask-sensitive`**；**信息台账 / 成本台账（`renderLedgerTab`/`renderOpexTab`）= 给容器 `#transactions-content-${system}` 加 `mask-sensitive`**
+  - ❗❗容器级打码**必须**在 `renderInboundTab`/`renderOutboundTab` 里 `classList.remove('mask-sensitive')`，否则切回登记单会把表单一起糊住
+  - ❗这是**前端看门**（防误操作，不防技术绕过）；改密码/改可见范围都在 `app.js` + `style.css`
+  - 自检 `tmp/perm-mask-test.js`（40 项：CSS 规则 / 四角色 class / 四块标记 / 切页不残留 / 源码完整性）
+
+## 行情写入必须带 product_id（10-01 修 bug）
+- 商品表**行情图是按 `product_id` 查的**（`/price-history/:code?product_id=`），只写 `product_code` → 图上显示「暂无价格数据」
+  - ① `/price-import/commit` 按 code 查 `main_products.id` 一并 INSERT；UPDATE 用 `COALESCE(product_id, ?)` 补空
+  - ② `POST /price-history`（补录弹窗；「单利润明细→补录行情」那条前端**不传 id**）→ 没传时按 code 补
+  - ③ 读接口 `/price-history/:code` 与 `/latest` 按 id 查时统一 `WHERE product_id = ? OR product_code = ?`（兜底历史 null 行）
+  - ⚠️ **取价/利润不受影响**（`loadPriceMap` 一直按 `product_code` 查，金额始终对）—— 这只是**图**的问题
+  - 历史回填：`UPDATE main_price_history h SET product_id = (SELECT p.id FROM main_products p WHERE p.code = h.product_code LIMIT 1) WHERE h.product_id IS NULL`
+  - 自检 `tmp/price-pid-test.js`（22 项，含**真跑 `_seriesFromHistory`+`_drawSVG`** 断言不出现「暂无价格数据」）
