@@ -1371,7 +1371,20 @@ ${rowsHtml}
       seen[c.code] = 1;
       cand += `<option value="${this._esc(c.code)}"${c.code === r.code ? ' selected' : ''}>${this._esc(c.name)}${c.spec ? '（' + this._esc(c.spec) + '）' : ''} · ${(c.score * 100).toFixed(0)}%</option>`;
     });
-    if (!cand) cand = '<option value="">（没有候选，从下面选）</option>';
+    if (!cand) {
+      // ❗别名命中的行（badge「已记住」）后端只回 code、不回 candidates，
+      //   下拉会退化成空 value 的占位项 → 勾了也导不进去。这里把命中的商品
+      //   补成一个 selected 项（不然用户看到的是「全选了却没反应」）。
+      if (r.code) {
+        const p = all.find(x => String(x.code) === String(r.code));
+        const nm = r.match_name || (p && p.name) || r.code;
+        const sp = r.match_spec || (p && p.spec) || '';
+        cand = `<option value="${this._esc(r.code)}" selected>${this._esc(nm)}${sp ? '（' + this._esc(sp) + '）' : ''} · 已记住</option>`;
+        seen[r.code] = 1;
+      } else {
+        cand = '<option value="">（没有候选，从下面选）</option>';
+      }
+    }
     const groups = {};
     all.forEach(p => { if (!seen[p.code]) (groups[p.type || '其它'] = groups[p.type || '其它'] || []).push(p); });
     let rest = '';
@@ -1396,13 +1409,18 @@ ${rowsHtml}
     const dateEl = document.getElementById('price-import-date');
     const date = dateEl ? dateEl.value : '';
     const items = [];
+    let noSel = 0;   // 勾了但没选具体商品的行（提醒要说得准，别让人以为勾选没生效）
     (this._priceRows || []).forEach(r => {
       const ck = document.getElementById('pi-ck-' + r.idx);
       const sel = document.getElementById('pi-sel-' + r.idx);
-      if (!ck || !ck.checked || !sel || !sel.value) return;
+      if (!ck || !ck.checked) return;
+      if (!sel || !sel.value) { noSel++; return; }
       items.push({ raw: r.raw, price: r.price, code: sel.value });
     });
-    if (!items.length) { showToast('先勾选要导入的行'); return; }
+    if (!items.length) {
+      showToast(noSel ? ('勾选的 ' + noSel + ' 行还没选具体商品，请在每行下面挑一个') : '先勾选要导入的行');
+      return;
+    }
     const el = document.getElementById('price-import-result');
     el.innerHTML = '<p style="font-size:13px;">正在写入行情…</p>';
     try {
