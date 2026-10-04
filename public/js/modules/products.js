@@ -1271,7 +1271,9 @@ ${rowsHtml}
       // 行尾的价格表达式：500 / ¥500 / 255/265（一行多色多价）
       const m = s.match(/(?:^|[\s\t])([¥￥]?\s*\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)*)\s*(?:元|块)?\s*$/);
       if (!m) return;
-      const prices = m[1].replace(/[¥￥\s]/g, '').split('/').map(Number).filter(n => n > 0);
+      // ❗0 是合法价：行情表标「停收」的商品，用户要求**照录、价填 0**（10-05 拍板）
+      //   这里只挡「非数字」，不再挡 0；负数/NaN 才丢。
+      const prices = m[1].replace(/[¥￥\s]/g, '').split('/').map(Number).filter(n => Number.isFinite(n) && n >= 0);
       if (!prices.length) return;
       const name = s.slice(0, m.index).replace(/\t/g, ' ').replace(/[\s:：\-–—\/]+$/, '').replace(/\s+/g, ' ').trim();
       if (!name) return;
@@ -1287,12 +1289,12 @@ ${rowsHtml}
           names.forEach((n, i) => {
             const nm = i === 0 ? n : (n.length <= 3 ? prefix + n : n);
             const pr = prices.length === 1 ? prices[0] : prices[i];
-            if (nm && pr > 0) out.push({ name: nm, price: pr });
+            if (nm && Number.isFinite(pr) && pr >= 0) out.push({ name: nm, price: pr });
           });
           return;
         }
       }
-      if (prices[0] > 0) out.push({ name, price: prices[0] });
+      if (Number.isFinite(prices[0]) && prices[0] >= 0) out.push({ name, price: prices[0] });
     });
     return out;
   },

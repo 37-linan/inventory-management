@@ -39,11 +39,14 @@
 - ❗**改口径必须同时改三处**：`/order-profit`（普通 + 套装两条分支）、`/dashboard`、`/ledger`；⚠️ 台账里套装「组成条目」`price_day` **本来就留空**（销售额并到代表行），核对时别误判
 - ❗补录弹窗默认日期 = **取价日**（`bf-price-date` / `_showBackfillPrice` / `_saveBackfillPrice`）
 - ❗❗**同日重复录入确定性**：`loadPriceMap` 必须 `ORDER BY product_code, date, created_at, id`；`pickMarketPrice` 两分支统一为「同一天取最后录入那条」
+- ❗❗**0 价 = 「停收」标记，不参与取价**（2026-10-05 拍板）：`pickMarketPrice` 循环 = `if (x.d > nd) break;` / `if (!(Number(x.p) > 0)) continue;` / `if (x.d === nd) hit = x; else before = x;`
+  - 语义：0 价视同「没录价」→ 照旧往前沿用；某商品只有 0 价 → 返回 `null`（明细走「待行情」），**绝不按 0 算销售额**
+  - ❌ 若让 0 参与取价：出库单销售额 = 0 → 变成「纯亏成本」的假亏损
 - ❗❗**「退回更早」≡「次日沿用」，数值完全等价**（09-27 全量 29/29 行零差异）→ 用户问「为什么取 24 号」，**永远是显示口径问题，别怀疑算法**
 - **真 bug 判据 = 取价日当天有行却没取到**
 - 成本 = 整单金额（首商品 `purchase_price`）；只算**已出库**的单；总览按**出库日期**归周（周一起）；**盈利红/亏损绿**；盈亏率统一 `_rateTxt(pnl, invest)`
 - 取不到行情 → 明细「待行情」¥0
-- 自检：`tmp/hold-day-test.js`（51 项：两套口径 + 沿用 + 套装 + 三处一致）、`tmp/price-day-test.js`（20 项：真实数据证明**普通出库金额零差异**）、`tmp/live-verify-1002.js`（线上只读核对）
+- 自检：`tmp/hold-day-test.js`（51 项：两套口径 + 沿用 + 套装 + 三处一致）、`tmp/price-day-test.js`（22 项：真实数据证明**普通出库金额零差异** + 0 价跳过）、`tmp/zero-price-test.js`（33 项：停收=价0 全链路）、`tmp/live-verify-1002.js`（线上只读核对）
 
 ## ⚠️ 出库归属 = FIFO + 整单口径（别再改回去）
 - `main_outbound.order_no` 是快递单号/"送货上门"，**与入库单号无关联**；❌ 按编码全局汇总会让新入库的单被历史出库凭空算出销售
@@ -82,6 +85,7 @@
 - 接口：`POST /price-import/match`、`POST /price-import/commit`（写 `main_price_history` + 别名 UPSERT，`hit_count+1`）、`GET /price-alias`、`DELETE /price-alias/:id`
 - 前端 `products.js` 工具栏「📊 导入行情」→ `showPriceImport/_parsePriceText/submitPriceMatch/_renderPriceMatch/_priceOptions/_priceCheckAll/confirmPriceImport`
   - `_parsePriceText`：取行尾价格表达式（`500`/`¥500`/`255/265`）；跳过含"结算价/行情/不代表/全系/品类"的表头说明行
+  - ❗**0 是合法价**（2026-10-05）：过滤条件改 `Number.isFinite(n) && n >= 0`（原 `n > 0` → 「停收」行被整行丢掉）；`/price-import/commit` 准入同理（`!Number.isFinite(price) || price < 0` 才挡）；`POST /price-history` 单条补录本就无 >0 校验
   - ❗斜杠只在**后段是颜色型号**时才拆多行（"黑/银"）；`相纸 -60张/盒` 的斜杠是量词 → 用单位字表 `[张盒个只瓶包袋支片条件套台克斤升米双对数]|\d|ml|cm|mm|kg` 挡掉
   - 拆出的第 2+ 段长度 ≤3 时补回前缀（剥掉第 1 段末尾颜色字）；下拉 = 「系统猜的」候选 + 全部商品（按 `type` 分 optgroup）兜底
 - ❗❗**用户工作流（10-01 定）**：用户发**行情截图** → 我读图 → **人工初筛**（只留系统里有的）→ 输出「**系统商品名 + 价格**」纯文本 → 用户自己粘到「📊 导入行情」

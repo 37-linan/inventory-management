@@ -101,9 +101,11 @@ function pickMarketPrice(priceMap, code, baseDay, sameDay) {
   const nd = priceDayPick(baseDay, sameDay);   // 取价日：寄存卖出 = 卖出当天；普通 = 次日
   let hit = null, before = null;
   for (const x of list) {
+    if (x.d > nd) break;                  // x.d > 取价日：之后录的价不参与（不往后找）
+    // ❗0 价 = 行情表「停收」，视同「没录价」→ 不参与取价，照旧往前沿用（10-05 拍板）
+    if (!(Number(x.p) > 0)) continue;
     if (x.d === nd) hit = x;              // 取价日当天有录 → 用它（同日多行取最后一条）
-    else if (x.d < nd) before = x;        // x.d < 取价日：往前回退，取最近一次
-    else break;                           // x.d > 取价日：之后录的价不参与（不往后找）
+    else before = x;                      // x.d < 取价日：往前回退，取最近一次
   }
   if (hit) return { price: hit.p, date: nd, fromNextDay: true };
   return before ? { price: before.p, date: before.d, fromNextDay: false } : null;
@@ -754,7 +756,8 @@ module.exports = function(db) {
         const code = String((it && it.code) || '').trim();
         const price = Number((it && it.price) || 0) || 0;
         const raw = String((it && it.raw) || '').trim();
-        if (!code || !(price > 0)) { failed++; continue; }
+        // ❗0 是合法价（行情表「停收」→ 照录、价填 0，10-05 拍板），只挡非数字/负数
+        if (!code || !Number.isFinite(price) || price < 0) { failed++; continue; }
         const pid = idOfCode[code] || null;
         try {
           const ex = await db.query('SELECT id FROM main_price_history WHERE product_code = ? AND date = ?', [code, date]);

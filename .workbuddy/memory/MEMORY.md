@@ -15,7 +15,7 @@
 - 服务器 `211.159.186.87`，`/home/ubuntu/inventory-app/`，PM2 `inventory-app`，密钥 `C:/Users/nan/.workbuddy/tencent-key.pem`；线上 **https://nanyishangmao.cn**（`:3000` 手机扫码废）
 - PG14 `inventory_db`；⚠️ 取日期一律 SQL `to_char(...)`（❌ JS `toISOString()` 差 8 小时）；❌ 禁止 rm/drop/truncate
 - GitHub `37-linan/inventory-management`：`GIT_SSH_COMMAND="ssh -i C:/Users/nan/.ssh/github_workbuddy -o StrictHostKeyChecking=no -p 443"`
-- **上线**：`scp` 直传（❌别让服务器 curl GitHub）→ 改 `public/` **必升 `sw.js CACHE_NAME`**（现 **v52**）；改 `routes/`/`server.js` → `pm2 restart inventory-app --update-env` → `md5sum` + `curl -w '%{http_code}'`
+- **上线**：`scp` 直传（❌别让服务器 curl GitHub）→ 改 `public/` **必升 `sw.js CACHE_NAME`**（现 **v53**）；改 `routes/`/`server.js` → `pm2 restart inventory-app --update-env` → `md5sum` + `curl -w '%{http_code}'`
 - **交付必须提醒用户：手机要整个关掉网页重开**
 - ⚠️ 22 端口常封 → scp/ssh 套 5 次重试；⚠️ `ssh 远端 "…$PATH…"` 的 `$PATH` 被**本地**展开 → 远端命令用**单引号**包；⚠️ 同文件多处编辑**必须串行**；⚠️ PATH 丢失先 `export PATH="/usr/bin:/bin:/c/Users/nan/.workbuddy/binaries/PortableGit/versions/1.2.0/bin:$PATH"`
 
@@ -56,6 +56,7 @@
 - ❗❗**算法只给候选，一律由人确认** → 前端**默认一条都不勾**；❗规格是强特征；颜色冲突重罚 ×0.45（只扫**尾部 4 字**）
 - ❗❗**写行情必须同时写 `product_id`**，否则行情图「暂无价格数据」（**只是图的问题**，取价/利润不受影响）
 - ❗`_parsePriceText` 取**行尾**价格表达式；斜杠只在**后段是颜色型号**时才拆行（`相纸 -60张/盒` 是量词，不拆）
+- ❗❗**「停收」= 照录、价填 0**（10-05 拍板）：表里写「停收 / 全系列停 / 0.0」的**不再丢**，输出 `系统商品名 0`；前端解析与后端落库都已放开 0（旧逻辑把 0 当「没解析到」直接丢）；但 **0 价不参与取价** —— `pickMarketPrice` 跳过 0，视同「没录价」往前沿用，**不会把出库单销售额算成 0**
 - **工作流**：用户发**行情截图** → 我读图 → **人工初筛**（只留系统里有的）→ 输出「**系统商品名 + 价格**」纯文本 → 用户自己粘到「📊 导入行情」
   - ❗自动匹配有噪声 → 初筛**必须人工过**，不能只看 `auto/likely`；同款多编码/名字对不上**必须问用户**
   - ❗❗**系统里同名多编码的商品，输出行必须带规格**（如「海飞丝净爽止痒型 蓝」有 670g / 360g 两码）
