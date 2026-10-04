@@ -83,6 +83,12 @@
   - ❗**颜色冲突重罚 ×0.45**：只扫**尾部 4 字**取颜色字（避开"红米/小米/金士顿"误伤）—— 防「小米手环10 黑」配到「银色」款
   - 分档（只影响提示强度）：`ambiguous`(多候选)/`auto`(≥0.72)/`likely`(≥0.45)/`low`/`none`
 - 接口：`POST /price-import/match`、`POST /price-import/commit`（写 `main_price_history` + 别名 UPSERT，`hit_count+1`）、`GET /price-alias`、`DELETE /price-alias/:id`
+- ❗**导入完成的提示（toast）语义**（2026-10-05 用户问「为什么说只有 1 条对应」后改的文案）：
+  `导入完成：写入 N 条行情（生效日 YYYY-MM-DD），同时记住这 M 个行情名[，失败 K 条][；另有 X 行没选商品，未导入]`
+  - `N = res.saved`：真正写进 `main_price_history` 的产品条数。❗**同一天同一 `product_code` 再导 = 覆盖 UPDATE，也算 1 条、不新增行**（所以「写入 11 条」≠ 表里多了 11 行）
+  - `M = res.aliased`：写进 `main_price_alias` 的条数。**每写成功一条就顺手记一条别名 → M 天生 == N**；两者不等只可能是 `normAlias(raw)===''`（名字全是标点/空白，当不了键）。❌别把它们当两个独立指标，也别用 `M < N` 当异常判据
+  - `K` 只在 >0 时拼进去；`X` = 勾了但下拉没选商品的行（前端 `noSel` 计数）
+  - ❗必须带 **生效日**：用户常把生效日填成**行情表表头那天**（如录 10-05 的表却填 10-04）→ 只报条数会让人去今天那天的行情里翻，翻不到就以为没写进去
 - 前端 `products.js` 工具栏「📊 导入行情」→ `showPriceImport/_parsePriceText/submitPriceMatch/_renderPriceMatch/_priceOptions/_priceCheckAll/confirmPriceImport`
   - `_parsePriceText`：取行尾价格表达式（`500`/`¥500`/`255/265`）；跳过含"结算价/行情/不代表/全系/品类"的表头说明行
   - ❗**0 是合法价**（2026-10-05）：过滤条件改 `Number.isFinite(n) && n >= 0`（原 `n > 0` → 「停收」行被整行丢掉）；`/price-import/commit` 准入同理（`!Number.isFinite(price) || price < 0` 才挡）；`POST /price-history` 单条补录本就无 >0 校验

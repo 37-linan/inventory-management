@@ -1427,7 +1427,17 @@ ${rowsHtml}
       const res = await API.post('/api/main/price-import/commit', { date, items });
       closeModal();
       await this.loadProducts(this.currentSystem);
-      showToast('导入完成：写入 ' + res.saved + ' 条行情，记住 ' + res.aliased + ' 条对应关系' + (res.failed ? '，失败 ' + res.failed + ' 条' : ''));
+      // ❗这条提示要能自解释（2026-10-05 用户问「为什么说只有 1 条对应」）：
+      //   saved  = 真正写进行情表的产品数（同一天同一商品再导 = 覆盖，也算 1 条）
+      //   aliased= 同时记进「行情名 ↔ 商品」对照表的条数 —— 每写成功一条就记一条，
+      //            所以它**天生等于 saved**，不是两个独立指标（别让人误读成"只对了1条"）
+      //   生效日必须写出来：用户会把生效日填成表头那天（如 10-04），只报条数会让人
+      //   去今天的行情表里翻，翻不到就以为没写进去。
+      let msg = '导入完成：写入 ' + res.saved + ' 条行情（生效日 ' + (res.date || date || '') +
+        '），同时记住这 ' + res.aliased + ' 个行情名';
+      if (res.failed) msg += '，失败 ' + res.failed + ' 条';
+      if (noSel) msg += '；另有 ' + noSel + ' 行没选商品，未导入';
+      showToast(msg);
     } catch (e) {
       el.innerHTML = '<p style="color:var(--danger);font-size:13px;">写入失败：' + this._esc(e.message) + '</p>';
     }

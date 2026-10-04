@@ -127,6 +127,12 @@ console.log('=== ④ confirmPriceImport：别名行导得出去；没选商品�
     eq(POSTS[0].b.date, '2026-10-05', '生效日跟着日期框走');
     eq(TOASTS.some(t => /先勾选要导入的行/.test(t)), false, '不再误报「先勾选要导入的行」');
     eq(TOASTS.some(t => /写入 1 条行情/.test(t)), true, '提示导入成功');
+    const t1 = TOASTS.find(t => /导入完成/.test(t)) || '';
+    ok(/生效日 2026-10-05/.test(t1),
+      '提示里写出「生效日」——不然用户会去今天那天的行情表里翻（旧文案没有，用户为此困惑过）');
+    ok(/同时记住这 1 个行情名/.test(t1),
+      '第二个数字说明白了「同时记住这 N 个行情名」，不再让人误读成"只对应了 1 条"');
+    eq(/失败/.test(t1), false, '没失败就不提失败');
   }
 
   // 4.2 勾了但下拉没选 → toast 要指明「还没选具体商品」
@@ -141,6 +147,24 @@ console.log('=== ④ confirmPriceImport：别名行导得出去；没选商品�
     eq(POSTS.length, 0, '没选商品就不写库');
     ok(TOASTS.some(t => /还没选具体商品/.test(t)),
       'toast 说明是「没选具体商品」，不是「没勾选」（用户才不会被绕晕）');
+  }
+
+  // 4.2b 一部分进去了、一部分没选商品 → 成功提示里要补一句「另有 N 行没导入」
+  {
+    const { PM, DOM, TOASTS } = createRuntime();
+    PM._priceRows = [aliasRow(1), { idx: 2, raw: '没选商品的行', price: 9, code: '', candidates: [] }];
+    PM.loadProducts = async () => {};
+    DOM['price-import-date'] = { value: '2026-10-04' };
+    DOM['price-import-result'] = { innerHTML: '' };
+    DOM['pi-ck-1'] = { checked: true };
+    DOM['pi-sel-1'] = { value: 'HFS470' };
+    DOM['pi-ck-2'] = { checked: true };
+    DOM['pi-sel-2'] = { value: '' };
+    await PM.confirmPriceImport();
+    const t = TOASTS.find(x => /导入完成/.test(x)) || '';
+    ok(/另有 1 行没选商品，未导入/.test(t),
+      '成功提示里补上「另有 1 行没选商品，未导入」（不然用户不知道有行被丢了）: ' + t);
+    ok(/生效日 2026-10-04/.test(t), '生效日跟着日期框走（用户常填成表头那天）');
   }
 
   // 4.3 一个都没勾 → 仍然是原来那句
