@@ -931,6 +931,37 @@ module.exports = function(db) {
     }
   });
 
+  // 出库记录「行内编辑」：数量 / 地点 / 订单号（2026-10-05 用户要求，跟入库同一套路）
+  // ❗必须注册在 /outbound/batch-order 之后：Express 按注册顺序匹配，
+  //   否则 '/outbound/:id' 会把 'batch-order' 当成 id 吃掉。
+  // ❗改数量会连带影响库存、已出库归属（FIFO）、整单利润 → 前端改完必须整表重刷。
+  router.patch('/outbound/:id', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const sets = [];
+      const params = [];
+
+      if (body.quantity !== undefined) {
+        const q = parseFloat(body.quantity);
+        if (!q || q <= 0) return res.status(400).json({ error: '数量必须大于 0' });
+        sets.push('quantity = ?'); params.push(q);
+      }
+      if (body.location !== undefined) {
+        sets.push('location = ?'); params.push(String(body.location || '').trim());
+      }
+      if (body.order_no !== undefined) {
+        sets.push('order_no = ?'); params.push(String(body.order_no || '').trim());
+      }
+      if (sets.length === 0) return res.status(400).json({ error: '没有需要修改的内容' });
+
+      params.push(req.params.id);
+      await db.query(`UPDATE main_outbound SET ${sets.join(', ')} WHERE id = ?`, params);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   router.delete('/outbound/:id', async (req, res) => {
     try {
       await db.query('DELETE FROM main_outbound WHERE id = ?', [req.params.id]);

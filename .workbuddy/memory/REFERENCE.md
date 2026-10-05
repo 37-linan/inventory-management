@@ -145,6 +145,19 @@
 - ⚠️ 设备名已统一（`林浩东`/`林h东` 合并，09-18，备份表 `main_inbound_dev_bak_20260918`）；防复发靠 `<datalist>` 只提示不限制
 - ✅ **订单号填成人名 = 正常现象**（没单号就拿名字占位，不参与计算）
 
+## 出库登记单（10-05 补上行内编辑）
+- **行内编辑**：`_editOutboundCell(system, field, id, el)`，3 格可点就地改 —— **数量 / 地点 / 订单号**
+  - ❗**数量必须是数字框 + 给正数**：表格里显示的 `-24` 只是**显示约定**，库里 `quantity` 存正数；编辑器预填 `rec.quantity`（正），提交前校验 `> 0`（后端同样挡 0/负数/NaN）
+  - ❗**地点带 `<datalist>` 候选**：从当前表里已有地点去重（深圳嘉文 / 深圳龙啊龙…），省得手打；**订单号不给候选**（快递单号基本唯一，给了是噪音）
+  - 值没变不发请求；ESC 取消（还原单元格）；回车/失焦提交；`dataset.editing` 防重复点击；行不在缓存 → 提示「数据已刷新」
+  - 保存后 `_refreshOutboundTable` 整表重刷 + 若在台账 tab 再 `renderLedgerTab`（**改数量会连带影响库存 / FIFO 已出库归属 / 整单利润**）
+- 行缓存 `this._outboundRowCache`（按 id，`_refreshOutboundTable` 里建），跟入库的 `_inboundRowCache` 同一套路
+- 后端 `PATCH /outbound/:id`（body `quantity` / `location` / `order_no`，都用 `!== undefined` 判存在）
+  - ❗❗**必须注册在 `/outbound/batch-order` 之后**：Express 按注册顺序匹配，`'/outbound/:id'` 在前会把 `'batch-order'` 当成 id → 批量补录订单号直接坏掉。线上已冒烟验证：`PATCH /outbound/batch-order` 空 body 仍返回「请选择出库记录」
+  - ❗`order_no` 允许改成**空串**（填错了要能清掉），所以判断用 `!== undefined` 而不是真值
+  - ⚠️ `order_no` 是**寄存（main_hold）的关联键**：改了一行已寄存的单号，那条寄存记录会对不上（跟「📝 补录订单号」老功能同样的风险，未加拦截）
+- 自检 `tmp/outbound-edit-test.js`（65 项：后端 3 字段 + 非法值 + 路由顺序模拟匹配 + 前端三格可点 + 编辑交互）
+
 ## 信息台账「盈亏总览」
 - 顶部 4 指标卡 + 盈亏柱线图（**手绘 SVG 零依赖，❌别引 echarts**）
 - `GET /api/main/dashboard` → `totals{}` + `weekly[]`/`monthly[]`/`daily[]` + `by_device[]` + `orders[]`；⚠️ 后端聚合日期要 `to_char(...)` 再比，不能 `String(pgDate)`

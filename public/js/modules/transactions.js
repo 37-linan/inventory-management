@@ -721,6 +721,84 @@ const TransactionsModule = {
     }
   },
 
+  // ===== 出库记录行内编辑：点一下「数量 / 地点 / 订单号」就地改 =====
+  // 跟入库的 _editInboundCell 同一套交互：回车提交、ESC 取消、点别处也提交。
+  // ❗数量改了会影响库存 / 已出库归属（FIFO）/ 整单利润 → 保存后整表重刷 + 台账重算。
+  async _editOutboundCell(system, field, id, el) {
+    if (el.dataset.editing === '1') return;
+    const rec = (this._outboundRowCache || {})[id];
+    if (!rec) { showToast('数据已刷新，请重新点击'); return; }
+
+    el.dataset.editing = '1';
+    const originalHTML = el.innerHTML;
+    let done = false;
+    let cancelled = false;
+
+    const restore = () => {
+      el.innerHTML = originalHTML;
+      delete el.dataset.editing;
+    };
+
+    const commit = async (rawVal) => {
+      if (done) return;
+      done = true;
+      if (cancelled) return restore();
+
+      const body = {};
+      if (field === 'quantity') {
+        const q = parseFloat(rawVal);
+        if (!q || q <= 0) { showToast('数量必须大于 0'); return restore(); }
+        if (q === parseFloat(rec.quantity)) return restore();
+        body.quantity = q;
+      } else {
+        const v = String(rawVal == null ? '' : rawVal).trim();
+        if (v === String(rec[field] || '').trim()) return restore();
+        body[field] = v;
+      }
+
+      el.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">保存中...</span>';
+      try {
+        await API.patch(`/api/${system}/outbound/${id}`, body);
+        showToast('已修改');
+        await this._refreshOutboundTable(system);
+        if (this.currentTab === 'ledger') await this.renderLedgerTab(system);
+      } catch (e) {
+        showToast('修改失败: ' + e.message);
+        restore();
+      }
+    };
+
+    // 数量：数字输入框（表格里显示 -N 只是显示约定，库里存的是正数，编辑器给正数）
+    if (field === 'quantity') {
+      el.innerHTML = `<input type="number" inputmode="decimal" step="0.01" min="0.01" value="${rec.quantity}"
+        style="width:100%;min-width:72px;padding:4px;font-size:13px;border:1px solid var(--primary);border-radius:4px;text-align:center;background:#fff;box-sizing:border-box;" />`;
+    } else {
+      // 地点 / 订单号：文本框。地点给一份「已用过的地点」候选（深圳嘉文、深圳龙啊龙…），
+      // 省得每次手打；订单号是快递单号，基本唯一，不做候选。
+      const isLoc = field === 'location';
+      const dlId = 'obl-' + id;
+      let dl = '';
+      if (isLoc) {
+        const opts = [...new Set(Object.values(this._outboundRowCache || {})
+          .map(x => String(x.location || '').trim()).filter(Boolean))];
+        if (opts.length) dl = `<datalist id="${dlId}">${opts.map(o => `<option value="${this._escHtml(o)}"></option>`).join('')}</datalist>`;
+      }
+      const cur = String(rec[field] || '');
+      el.innerHTML = `<input type="text" value="${this._escHtml(cur)}" ${dl ? `list="${dlId}"` : ''}
+        placeholder="${isLoc ? '地点，如 深圳嘉文' : '订单号 / 快递单号'}"
+        style="width:100%;min-width:96px;padding:4px;font-size:13px;border:1px solid var(--primary);border-radius:4px;background:#fff;box-sizing:border-box;" />${dl}`;
+    }
+
+    const input = el.querySelector('input');
+    input.focus();
+    try { input.select(); } catch (e) {}
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape') { cancelled = true; input.blur(); }
+    });
+    input.addEventListener('blur', () => commit(input.value));
+  },
+
   // 渠道下拉选项（按系统缓存，避免每次点击都请求）
   async _getChannelOptions(system) {
     this._channelOptionsCache = this._channelOptionsCache || {};
@@ -1277,6 +1355,10 @@ const TransactionsModule = {
       const products = await API.get(`/api/${system}/products`);
       if (label) label.textContent = `共 ${records.length} 条记录`;
 
+      // 行内编辑要按 id 取回原始值（改完/取消都得拿得到），跟入库表 _inboundRowCache 一个套路
+      this._outboundRowCache = {};
+      records.forEach(r => { this._outboundRowCache[r.id] = r; });
+
       if (records.length === 0) {
         tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-light);padding:20px;">暂无出库记录</td></tr>';
         return;
@@ -1291,9 +1373,9 @@ const TransactionsModule = {
           <td><code style="background:#f0f0f0;padding:2px 6px;border-radius:4px;font-size:11px;">${r.product_code}</code></td>
           <td>${p ? p.name : '-'}</td>
           <td>${p ? (p.spec || '-') : '-'}</td>
-          <td><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
-          <td>${r.location || '-'}</td>
-          <td>${r.order_no ? '<span style="color:var(--primary);font-size:12px;">📦 ' + r.order_no + '</span>' : '<span style="color:#bbb;font-size:11px;">未填</span>'}</td>
+          <td style="cursor:pointer;" onclick="TransactionsModule._editOutboundCell('${system}','quantity',${r.id},this)" title="点击修改数量"><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
+          <td style="cursor:pointer;" onclick="TransactionsModule._editOutboundCell('${system}','location',${r.id},this)" title="点击修改地点">${r.location ? this._escHtml(r.location) : '<span style="color:#bbb;font-size:11px;">未填</span>'}</td>
+          <td style="cursor:pointer;" onclick="TransactionsModule._editOutboundCell('${system}','order_no',${r.id},this)" title="点击修改订单号">${r.order_no ? '<span style="color:var(--primary);font-size:12px;">📦 ' + this._escHtml(r.order_no) + '</span>' : '<span style="color:#bbb;font-size:11px;">未填</span>'}</td>
           <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">图片查看</a>` : '-'}</td>
           <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteOutbound('${system}',${r.id})">删除</button></td>
         </tr>`;
