@@ -864,10 +864,23 @@ table tr.row-color:hover td { background-color: var(--row-bg-hover); }
     width: 100%;
     display: flex;
     gap: 8px;
+    /* 手机版：这排按钮改成「整排左右滑动」，不再把文字压掉（电脑版不受影响） */
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;            /* Firefox：细滚动条 */
+    padding-bottom: 4px;
   }
 
+  /* 滑动条（Chrome / 安卓可见；iOS 使用系统浮层滚动条） */
+  .card-header .btn-group::-webkit-scrollbar { height: 5px; }
+  .card-header .btn-group::-webkit-scrollbar-track { background: rgba(0,0,0,0.06); border-radius: 3px; }
+  .card-header .btn-group::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.28); border-radius: 3px; }
+
   .card-header .btn-group .btn {
-    flex: 1;
+    /* ❗原来是 flex:1（会被压缩，把「管理类型」切掉）；改成 1 0 auto：
+       横向够宽时平分撑满，不够宽时保持文字完整宽度、整排可滑动 */
+    flex: 1 0 auto;
     justify-content: center;
   }
 

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>手机版按钮排 —— 修复前 / 修复后</title>
+<link rel="stylesheet" href="../../public/css/style.css">
+<style>
+  body { background:#0f1115 !important; color:#e6e6e6; margin:0; padding:24px 16px; font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif; }
+  h1 { font-size:16px; font-weight:600; margin:0 0 6px; }
+  p.tip { font-size:13px; color:#9aa0a6; margin:0 0 20px; line-height:1.7; }
+  .row { display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start; }
+  .col { }
+  .col > .label { font-size:13px; margin-bottom:8px; }
+  .col.old > .label { color:#ff8a80; }
+  .col.new > .label { color:#81c995; }
+  /* 模拟手机屏（iPhone 逻辑宽 393px） */
+  .phone { width:393px; background:#f6f8fa; border-radius:10px; padding:12px; box-sizing:border-box; border:1px solid #2a2f3a; }
+
+  /* ---------- 修复前：线上现在跑的规则 ---------- */
+  .col.old .card-header { flex-direction:column; align-items:flex-start; }
+  .col.old .card-header .btn-group { width:100%; display:flex; gap:8px; }
+  .col.old .card-header .btn-group .btn { flex:1; justify-content:center; }
+
+  /* ---------- 修复后：本次改动 ---------- */
+  .col.new .card-header { flex-direction:column; align-items:flex-start; }
+  .col.new .card-header .btn-group {
+    width:100%; display:flex; gap:8px;
+    overflow-x:auto; overflow-y:hidden;
+    scrollbar-width:thin; padding-bottom:4px;
+  }
+  .col.new .card-header .btn-group::-webkit-scrollbar { height:5px; }
+  .col.new .card-header .btn-group::-webkit-scrollbar-track { background:rgba(0,0,0,.06); border-radius:3px; }
+  .col.new .card-header .btn-group::-webkit-scrollbar-thumb { background:rgba(0,0,0,.28); border-radius:3px; }
+  .col.new .card-header .btn-group .btn { flex:1 0 auto; justify-content:center; }
+</style>
+</head>
+<body>
+  <h1>手机版「主产品信息表」顶部按钮排</h1>
+  <p class="tip">两个框都是 393px 宽的手机屏宽。左边是修复前的样子（「管理类型」被切掉一半，且没法滑动）；右边是修复后的样子（文字完整，下面多出一条可以拖动的细滑轨，手指左右滑也能滑）。</p>
+  <div class="row">
+    <div class="col old">
+      <div class="label">✕ 修复前（线上旧版）</div>
+      <div class="phone">
+        <div class="card" style="margin-bottom:0;">
+          <div class="card-header">
+            <h3>📋 主产品信息表</h3>
+            <div class="btn-group">
+              <button class="btn btn-primary">➕ 添加物品</button>
+              <button class="btn btn-success">📥 批量导入</button>
+              <button class="btn btn-secondary">📊 导入行情</button>
+              <button class="btn btn-secondary">📑 管理类型</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col new">
+      <div class="label">✓ 修复后（本次上线）</div>
+      <div class="phone">
+        <div class="card" style="margin-bottom:0;">
+          <div class="card-header">
+            <h3>📋 主产品信息表</h3>
+            <div class="btn-group">
+              <button class="btn btn-primary">➕ 添加物品</button>
+              <button class="btn btn-success">📥 批量导入</button>
+              <button class="btn btn-secondary">📊 导入行情</button>
+              <button class="btn btn-secondary">📑 管理类型</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

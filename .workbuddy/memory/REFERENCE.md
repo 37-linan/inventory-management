@@ -173,6 +173,11 @@
 - **「待次日行情」**：`出库日次日 > 今天`（`todayOf(db)` 用 DB 时区）→ `await_price`；前端 4 处标注；这些单**仍计入**总投入/总收益
 - **通用辅助（复用）**：`_fmtMoneySep`(千分位)/`_fmtMonth`/`_todayLocal`(❌别用 toISOString)/`_escHtml`(进 innerHTML 必须转义)；表单值**一律 JS 赋值** `el.value=...`，❌别拼进 HTML 属性
 - ⚠️ **标签栏窄屏会裁切**：`.tabs` 有 `overflow-x:auto` + `.tab{flex:0 0 auto}`；**以后加标签先算窄屏宽度**
+- ⚠️ **按钮排窄屏会裁切**（10-09）：主产品信息表顶部 `.card-header .btn-group`（全站仅此一处）
+  手机端必须 `overflow-x:auto` + `.btn{flex:1 0 auto}`。
+  ❗`flex:1`（=`1 1 0%`）看似能压缩，实则 flex item `min-width:auto` 让按钮**不缩到内容宽度以下**，
+  整排溢出后被 `.card{overflow:hidden}` 裁掉（表现＝最后一个按钮只露半个字）。
+  **教训：窄屏「文字被切」先怀疑「整排溢出被容器裁掉」，别只想着换行/省略号**
 
 ## 无浏览器自检（`frontend-logic-check` skill）
 - 前端：Node + `vm` + 最小 DOM stub 真跑模块；后端：vm 加载路由 → `router.stack.find(l => l.route.path === '/xxx').route.stack[0].handle` 取**真实 handler** + mock `db.query`（按 SQL 特征分流）+ stub `res.json` → 不启服务验证完整逻辑，还能**一次验证多处口径一致**

@@ -91,6 +91,7 @@
 - **出库信息单**：判断用 `_isTouchDevice()`（❌别用只看 `innerWidth` 的 `isMobile()`）；搜索**输入时不重绘弹窗**
 - **「待次日行情」**：`出库日次日 > 今天` → `await_price`，这些单**仍计入**总投入/总收益
 - **通用辅助**：`_fmtMoneySep`/`_todayLocal`(❌别用 toISOString)/`_escHtml`；表单值**一律 JS 赋值** `el.value=...`；⚠️ 标签栏窄屏会裁切，加标签先算窄屏宽度
+- **窄屏「文字被切」**：先怀疑**整排溢出被容器裁掉**（`.card{overflow:hidden}` + flex item `min-width:auto` 不肯缩），**解法是给容器 `overflow-x:auto` + 子项 `flex:1 0 auto`，不是换行**（`.tabs`、`.card-header .btn-group` 都照这个改）
 
 ## 无浏览器自检（`frontend-logic-check` skill）
 - 前端 Node+`vm`+DOM stub 真跑模块；后端 vm 取**真实 handler** + mock `db.query` + stub `res.json`
