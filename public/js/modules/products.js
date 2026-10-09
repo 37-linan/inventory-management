@@ -16,6 +16,7 @@ const ProductsModule = {
             <button class="btn btn-success" onclick="ProductsModule.showBatchImport('${system}')">📥 批量导入</button>
             <button class="btn btn-secondary" onclick="ProductsModule.showPriceImport('${system}')">📊 导入行情</button>
             <button class="btn btn-secondary" onclick="ProductsModule.manageTypes('${system}')">📑 管理类型</button>
+            <button class="btn btn-secondary" id="smart-sort-btn-${system}" onclick="ProductsModule.smartSortClick('${system}')" title="把同一品牌的商品自动排到一起（只调顺序，可撤销）">🧠 智能整理</button>
           </div>
         </div>
       </div>
@@ -26,6 +27,7 @@ const ProductsModule = {
     `;
 
     await this.loadProducts(system);
+    this._refreshSmartBtn(system);
   },
 
   async loadProducts(system) {
@@ -845,6 +847,334 @@ ${rowsHtml}
       await this.loadProducts(system);
     } catch (e) {
       showToast('调整顺序失败: ' + e.message);
+    }
+  },
+
+  // ==================== 🧠 智能整理：同一品牌的商品自动排到一起 ====================
+  // 商品名里没有独立的「品牌」字段，只能从名称里认。三层策略：
+  //   ① 内置品牌词表（含别名，命中的关键词最长者胜出）—— 日常商品基本都靠这层
+  //   ② 词表认不出的：名称开头连续 ≥2 个字相同的互相抱团（一次录入多个新品牌商品时能自动聚起来）
+  //   ③ 还认不出的：保持原位置不动
+  // ❗只写排序字段 sort_order，不改任何商品数据；整理前顺序记在本地，随时能撤销。
+  // ❗单字关键词（如"后"）一律不参与「包含」匹配，否则满屏误伤。
+  _brandTable() {
+    if (this._brandCache) return this._brandCache;
+    this._brandCache = [
+      { brand: '海飞丝', keys: ['海飞丝', 'head&shoulders'] },
+      { brand: '沙宣', keys: ['沙宣', 'vidalsassoon'] },
+      { brand: '潘婷', keys: ['潘婷', 'pantene'] },
+      { brand: '欧莱雅', keys: ['欧莱雅', '巴黎欧莱雅', 'loreal'] },
+      { brand: '李施德林', keys: ['李施德林', 'listerine'] },
+      { brand: '苏菲', keys: ['苏菲', 'sofy'] },
+      { brand: '乐而雅', keys: ['乐而雅', 'laurier'] },
+      { brand: '护舒宝', keys: ['护舒宝', 'whisper'] },
+      { brand: '她研社', keys: ['她研社'] },
+      { brand: '淘淘氧棉', keys: ['淘淘氧棉'] },
+      { brand: '舒适达', keys: ['舒适达', 'sensodyne'] },
+      { brand: '吉列', keys: ['吉列', 'gillette'] },
+      { brand: '欧乐B', keys: ['欧乐b', 'oral-b', 'oralb'] },
+      { brand: '珂润', keys: ['珂润', 'curel'] },
+      { brand: '芙丽芳丝', keys: ['芙丽芳丝', 'freeplus'] },
+      { brand: '适乐肤', keys: ['适乐肤', 'cerave'] },
+      { brand: '贝德玛', keys: ['贝德玛', 'bioderma'] },
+      { brand: '理肤泉', keys: ['理肤泉', 'laroche'] },
+      { brand: '依泉', keys: ['依泉', 'uriage'] },
+      { brand: '颐莲', keys: ['颐莲'] },
+      { brand: '瑷尔博士', keys: ['瑷尔博士', 'dr.alva'] },
+      { brand: '芬浓', keys: ['芬浓', 'fino'] },
+      { brand: '芭妮兰', keys: ['芭妮兰', 'banila'] },
+      { brand: '妮维雅', keys: ['妮维雅', 'nivea'] },
+      { brand: '韩束', keys: ['韩束', 'kans'] },
+      { brand: '当妮', keys: ['当妮', 'downy'] },
+      { brand: '美宝莲', keys: ['美宝莲', 'maybelline'] },
+      { brand: 'LaboLabo', keys: ['labolabo', '城野医生', 'dr.ci:labo'] },
+      { brand: '拍立得', keys: ['拍立得', 'instax', 'fujifilm', '富士'] },
+      { brand: '小米', keys: ['小米', 'xiaomi', '米家', 'mijia', '小爱', 'redmi', 'redml', 'redme', '红米'] },
+      { brand: '华为', keys: ['华为', 'huawei'] },
+      { brand: '荣耀', keys: ['荣耀', 'honor'] },
+      { brand: 'OPPO', keys: ['oppo'] },
+      { brand: '罗技', keys: ['罗技', 'logitech', 'gpw'] },
+      { brand: '奔富', keys: ['奔富', 'penfolds'] },
+      { brand: 'SK-II', keys: ['skii', 'sk-ii', 'sk2', '神仙水'] },
+      { brand: '科颜氏', keys: ['科颜氏', 'kiehl'] },
+      { brand: '海蓝之谜', keys: ['海蓝之谜', 'lamer'] },
+      { brand: '兰蔻', keys: ['兰蔻', 'lancome'] },
+      { brand: '资生堂', keys: ['资生堂', 'shiseido'] },
+      { brand: '娇韵诗', keys: ['娇韵诗', 'clarins'] },
+      { brand: '娇兰', keys: ['娇兰', 'guerlain'] },
+      { brand: '欧舒丹', keys: ['欧舒丹', 'loccitane'] },
+      { brand: '范思哲', keys: ['范思哲', 'versace'] },
+      { brand: '爱马仕', keys: ['hermes', '爱马仕'] },
+      { brand: 'CPB', keys: ['cpb', '肌肤之钥'] },
+      { brand: 'IPSA', keys: ['ipsa', '茵芙莎'] },
+      { brand: 'FANCL', keys: ['fancl', '芳珂'] },
+      { brand: '芭比布朗', keys: ['芭比布朗', 'bobbibrown'] },
+      { brand: 'Whoo', keys: ['whoo', '水妍', '天气丹', '天率丹'] },
+      { brand: '悦木之源', keys: ['悦木之源', 'origins', '菌菇水'] },
+    ];
+    return this._brandCache;
+  },
+
+  // 名称归一：全角转半角、去掉所有空格、转小写（RedMi / Redmi / redmi 视为同一写法）
+  _normText(s) {
+    return String(s == null ? '' : s).normalize('NFKC').replace(/\s+/g, '').toLowerCase();
+  },
+
+  // 从商品名里认品牌：所有关键词里命中最长的那个
+  _brandOf(name) {
+    const n = this._normText(name);
+    if (!n) return null;
+    let best = null;
+    let bestLen = 0;
+    for (const g of this._brandTable()) {
+      for (const k of g.keys) {
+        const kk = this._normText(k);
+        if (kk.length < 2) continue;
+        if (n.indexOf(kk) >= 0 && kk.length > bestLen) { best = g.brand; bestLen = kk.length; }
+      }
+    }
+    return best;
+  },
+
+  // 两个名称开头连续相同的字数（用于词表没收录的新品牌之间互相抱团）
+  _commonHeadLen(a, b) {
+    const n = Math.min(a.length, b.length);
+    let i = 0;
+    while (i < n && a.charAt(i) === b.charAt(i)) i++;
+    return i;
+  },
+
+  // 算「一个类型分组」整理后的新顺序（纯计算，不写库）
+  _smartPlanForType(items) {
+    const rows = this._buildDisplayRows(items); // 套装先按名称合成一行，与列表显示同口径
+    rows.forEach((r, i) => {
+      r._i = i;
+      r._brand = this._brandOf((r.items[0] || {}).name || r.set_name || '');
+    });
+
+    // 词表认不出的：名称开头 ≥2 个字相同的互相抱团（≥2 行才算一团）
+    const unknownRows = rows.filter(r => !r._brand);
+    const clusters = [];
+    unknownRows.forEach(r => {
+      const n = this._normText((r.items[0] || {}).name || '');
+      let hit = null;
+      let hitLen = 1;
+      clusters.forEach(c => {
+        const l = this._commonHeadLen(n, c.head);
+        if (l >= 2 && l > hitLen) { hit = c; hitLen = l; }
+      });
+      if (hit) hit.rows.push(r);
+      else clusters.push({ head: n, rows: [r] });
+    });
+    clusters.forEach(c => {
+      if (c.rows.length < 2) return;
+      const label = String((c.rows[0].items[0] || {}).name || '').slice(0, 6);
+      c.rows.forEach(r => { r._brand = '≈' + label; });
+    });
+
+    // 每个品牌团的「首次出现位置」当主排序键：品牌聚成一团，团与团之间保持原来的大致先后
+    const boot = {};
+    rows.forEach(r => {
+      const k = r._brand || ('~' + r._i);
+      if (boot[k] === undefined) boot[k] = r._i;
+    });
+
+    const sorted = rows.slice().sort((a, b) => {
+      const ka = a._brand || ('~' + a._i);
+      const kb = b._brand || ('~' + b._i);
+      if (boot[ka] !== boot[kb]) return boot[ka] - boot[kb];
+      const ai = a.items[0] || {};
+      const bi = b.items[0] || {};
+      const na = this._normText(ai.name) + '|' + this._normText(ai.spec);
+      const nb = this._normText(bi.name) + '|' + this._normText(bi.spec);
+      return na.localeCompare(nb, 'zh-Hans-CN'); // 团内：先名称、再规格
+    });
+
+    const brandList = [];
+    sorted.forEach(r => {
+      const k = r._brand || '（没认出品牌）';
+      const last = brandList[brandList.length - 1];
+      if (last && last.name === k) { last.count++; return; }
+      brandList.push({ name: k, count: 1 });
+    });
+
+    const orderedIds = [];
+    sorted.forEach(r => (r.items || []).forEach(p => orderedIds.push(p.id)));
+
+    return { rows: sorted, orderedIds, brandList, unknown: unknownRows.length };
+  },
+
+  // 全部类型分组的整理方案（按类型分开算 → 每个类型的 sort_order 各自从 1 开始）
+  _buildSmartPlan(products) {
+    const byType = {};
+    const order = [];
+    (products || []).forEach(p => {
+      const t = p.type || '未分类';
+      if (!byType[t]) { byType[t] = []; order.push(t); }
+      byType[t].push(p);
+    });
+    const groups = order.map(t => Object.assign({ type: t }, this._smartPlanForType(byType[t])));
+    const rowCount = groups.reduce((s, g) => s + g.rows.length, 0);
+    const unknown = groups.reduce((s, g) => s + g.unknown, 0);
+    const brandCount = groups.reduce((s, g) => s + g.brandList.length, 0);
+    return { groups, rowCount, unknown, brandCount };
+  },
+
+  _undoKey(system) { return 'products-smart-undo-' + system; },
+
+  _readUndo(system) {
+    try {
+      const raw = localStorage.getItem(this._undoKey(system));
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      return (o && o.groups) ? o : null;
+    } catch (e) { return null; }
+  },
+
+  _writeUndo(system, groups) {
+    try {
+      localStorage.setItem(this._undoKey(system), JSON.stringify({ at: this._nowStamp(), groups }));
+    } catch (e) { /* 隐私模式写不了就算了，不影响整理本身 */ }
+  },
+
+  _clearUndo(system) {
+    try { localStorage.removeItem(this._undoKey(system)); } catch (e) { /* ignore */ }
+  },
+
+  _nowStamp() {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `${this._todayStr()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  },
+
+  // 按钮文字随「有没有可撤销的记录」切换
+  _refreshSmartBtn(system) {
+    const btn = document.getElementById('smart-sort-btn-' + system);
+    if (!btn) return;
+    const undo = this._readUndo(system);
+    if (undo) {
+      btn.dataset.act = 'undo';
+      btn.textContent = '↩️ 撤销整理';
+      btn.title = `还原到 ${undo.at} 整理之前的顺序`;
+    } else {
+      delete btn.dataset.act;
+      btn.textContent = '🧠 智能整理';
+      btn.title = '把同一品牌的商品自动排到一起（只调顺序，可撤销）';
+    }
+  },
+
+  smartSortClick(system) {
+    const btn = document.getElementById('smart-sort-btn-' + system);
+    if (btn && btn.dataset.act === 'undo') { this.showUndoSmartSort(system); return; }
+    this.showSmartSort(system);
+  },
+
+  // 先出预览：让用户看清会排成什么样，再决定要不要应用
+  showSmartSort(system) {
+    const products = this._allProducts || [];
+    if (!products.length) { showToast('还没有商品'); return; }
+    const plan = this._buildSmartPlan(products);
+    this._smartPending = { system, plan };
+
+    const groupsHtml = plan.groups.map(g => `
+      <div style="margin-bottom:12px;">
+        <div style="font-weight:600;font-size:13px;color:var(--primary);margin-bottom:5px;">
+          📁 ${this._esc(g.type)} · ${g.rows.length} 行
+          ${g.unknown ? `<span style="color:var(--text-light);font-weight:400;">（其中 ${g.unknown} 项没认出品牌，保持原位）</span>` : ''}
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);line-height:2;">
+          ${g.brandList.map((b, i) => `<span style="display:inline-block;background:#f5f2fb;border-radius:10px;padding:0 8px;margin:0 4px 4px 0;">${i + 1}. ${this._esc(b.name)}${b.count > 1 ? ' × ' + b.count : ''}</span>`).join('')}
+        </div>
+      </div>`).join('');
+
+    showModal('🧠 按品牌整理排序');
+    const body = document.getElementById('modal-body');
+    body.innerHTML = `
+      <p style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;line-height:1.7;">
+        把<b>同一品牌</b>的商品排到一起（只在各自的「类型」分组内调整），同一品牌里再按名称、规格排列。
+        <br/>只改排列顺序，不动任何商品数据。整理前的顺序会先记下来，随时能点「↩️ 撤销整理」还原。
+      </p>
+      <div style="max-height:44vh;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:10px;background:#fafafa;">
+        ${groupsHtml}
+      </div>
+      <p style="font-size:12px;color:var(--text-light);margin-top:8px;">
+        共 ${plan.rowCount} 行 → ${plan.brandCount} 个品牌分组${plan.unknown ? `，另有 ${plan.unknown} 项没认出品牌（留在原位）` : ''}。
+      </p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
+        <button type="button" class="btn btn-primary btn-lg" onclick="ProductsModule.applySmartSort('${system}')">✅ 应用排序</button>
+      </div>
+    `;
+  },
+
+  async applySmartSort(system) {
+    const pending = this._smartPending;
+    if (!pending || pending.system !== system) { showToast('请重新点「🧠 智能整理」'); return; }
+    const plan = pending.plan;
+
+    // 先把整理前的顺序按类型记下来（撤销时按这个还原）
+    const before = {};
+    (this._allProducts || []).forEach(p => {
+      const t = p.type || '未分类';
+      (before[t] = before[t] || []).push(p.id);
+    });
+    this._writeUndo(system, before);
+
+    const btn = document.getElementById('smart-sort-btn-' + system);
+    if (btn) { btn.disabled = true; btn.textContent = '整理中…'; }
+    try {
+      for (const g of plan.groups) {
+        if (!g.orderedIds.length) continue;
+        await API.post('/api/main/products/reorder', { orderedIds: g.orderedIds });
+      }
+      this._smartPending = null;
+      closeModal();
+      await this.loadProducts(system);
+      this._refreshSmartBtn(system);
+      showToast(`已按品牌整理完成：${plan.rowCount} 行 → ${plan.brandCount} 个品牌分组`);
+    } catch (e) {
+      // 失败时保留撤销记录：能一键还原回整理前，不至于卡在半路
+      showToast('整理保存失败: ' + e.message);
+      if (btn) btn.disabled = false;
+      this._refreshSmartBtn(system);
+    }
+  },
+
+  showUndoSmartSort(system) {
+    const undo = this._readUndo(system);
+    if (!undo) { showToast('没有可撤销的整理记录'); this._refreshSmartBtn(system); return; }
+    showModal('↩️ 撤销整理');
+    const body = document.getElementById('modal-body');
+    body.innerHTML = `
+      <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;">
+        恢复到 <b>${this._esc(undo.at)}</b> 那次整理之前的排列顺序？
+      </p>
+      <div class="form-actions">
+        <button type="button" class="btn btn-secondary btn-lg" onclick="closeModal()">取消</button>
+        <button type="button" class="btn btn-primary btn-lg" onclick="ProductsModule.undoSmartSort('${system}')">↩️ 确认撤销</button>
+      </div>
+    `;
+  },
+
+  async undoSmartSort(system) {
+    const undo = this._readUndo(system);
+    if (!undo) { showToast('没有可撤销的整理记录'); return; }
+    const btn = document.getElementById('smart-sort-btn-' + system);
+    if (btn) { btn.disabled = true; btn.textContent = '还原中…'; }
+    try {
+      for (const [type, ids] of Object.entries(undo.groups || {})) {
+        if (!ids || !ids.length) continue;
+        await API.post('/api/main/products/reorder', { orderedIds: ids });
+      }
+      this._clearUndo(system);
+      closeModal();
+      await this.loadProducts(system);
+      this._refreshSmartBtn(system);
+      showToast('已还原到整理前的顺序');
+    } catch (e) {
+      showToast('还原失败: ' + e.message);
+      if (btn) btn.disabled = false;
+      this._refreshSmartBtn(system);
     }
   },
 
