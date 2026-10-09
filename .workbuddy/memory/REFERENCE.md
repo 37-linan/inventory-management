@@ -158,6 +158,29 @@
   - ⚠️ `order_no` 是**寄存（main_hold）的关联键**：改了一行已寄存的单号，那条寄存记录会对不上（跟「📝 补录订单号」老功能同样的风险，未加拦截）
 - 自检 `tmp/outbound-edit-test.js`（65 项：后端 3 字段 + 非法值 + 路由顺序模拟匹配 + 前端三格可点 + 编辑交互）
 
+## 图片（入库 / 出库 · 10-09 支持多张）
+- **一列存多张**：`main_inbound.image_path` / `main_outbound.image_path`（TEXT）用**英文逗号**拼路径，
+  单张不带逗号 → **老数据天然兼容**；已确认前端/后端**没有别处**按单张解析（只有 INSERT 写入）
+- 前端 `transactions.js`：
+  - `_imagesToPath(arr)` → 提交用（❌**别再写 `arr[0]`**，那是「拍两张只存一张」的元凶）
+  - `_imgList(imagePath)` → 拆成数组（容错逗号两侧空格、空项）
+  - `_imgCellHtml(imagePath)` → 记录表「图片」列：一张 `图片查看` / 多张 `图片查看(N)`
+  - 表单缩略图仍是一张一个 `showImagePreview(path)`（本来就没问题）
+- 预览弹窗 `camera.js showImagePreview(path)`：接受**逗号串**，画成图册 ——
+  标题「图片预览（共 N 张）」、每张「第 i / N 张」、每张独立「💾 保存图片」，
+  多张时保存文件名加 `第N张_` 前缀（否则多张下载重名）
+- 自检 `tmp/image-multi-test.js`（35 项）；`tmp/old-diff-1009.js` 用改动前文件复现 5 条老毛病
+
+## 加载失败必须「看得见」（10-09）
+- `public/js/modules/api.js` `request(method, url, data, timeoutMs = 20000)`：
+  `AbortController` 超时，错误分四类 → 超时 / 网络连接失败 / 服务器返回异常内容(非 JSON) / 后端 `error` 原样透出
+- `products.js loadProducts`：catch 里**必须在列表区画出**「⚠️ 产品数据加载失败 + 原因 + 🔄 重新加载」
+  ❗以前只 `showToast`（2.5 秒消失）→ 列表永远停在初始的「加载中...」，用户完全不知道为什么
+  - 接口回的不是数组 → 当作失败（❌别退化成「暂无产品信息」去骗用户）
+  - ❗**仪表盘 `_renderDashboard` 要放在 `container.innerHTML = html` 之后**：它内部还要再拉一次
+    `/api/main/inventory`，放在前面会把整张列表卡住（异步阻塞）
+- 自检 `tmp/repro-products-render.js`（用线上真数据跑真模块，验证渲染链路本身没问题）
+
 ## 信息台账「盈亏总览」
 - 顶部 4 指标卡 + 盈亏柱线图（**手绘 SVG 零依赖，❌别引 echarts**）
 - `GET /api/main/dashboard` → `totals{}` + `weekly[]`/`monthly[]`/`daily[]` + `by_device[]` + `orders[]`；⚠️ 后端聚合日期要 `to_char(...)` 再比，不能 `String(pgDate)`

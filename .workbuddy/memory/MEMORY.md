@@ -17,7 +17,7 @@
 - GitHub `37-linan/inventory-management`：`GIT_SSH_COMMAND="ssh -i C:/Users/nan/.ssh/github_workbuddy -o StrictHostKeyChecking=no -p 443"`
 - **上线**：`scp` 直传（❌别让服务器 curl GitHub）→ 改 `public/` **必升 `sw.js CACHE_NAME`**（现 **v53**）；改 `routes/`/`server.js` → `pm2 restart inventory-app --update-env` → `md5sum` + `curl -w '%{http_code}'`
 - **交付必须提醒用户：手机要整个关掉网页重开**
-- ⚠️ 22 端口常封 → scp/ssh 套 5 次重试；⚠️ `ssh 远端 "…$PATH…"` 的 `$PATH` 被**本地**展开 → 远端命令用**单引号**包；⚠️ 同文件多处编辑**必须串行**；⚠️ PATH 丢失先 `export PATH="/usr/bin:/bin:/c/Users/nan/.workbuddy/binaries/PortableGit/versions/1.2.0/bin:$PATH"`
+- ⚠️ 22 端口常封 → scp/ssh 套 5 次重试；**也可能长时间不通**（表现为先 `Connection refused` 再 `Connection timed out`），此时 `https://nanyishangmao.cn/` 仍 200 → 是防火墙拦**出口 IP**（`curl https://ipinfo.io/ip` 看当前 IP，家宽是动态的）→ 让用户去腾讯云轻量「防火墙」放行，或换网络；⚠️ `ssh 远端 "…$PATH…"` 的 `$PATH` 被**本地**展开 → 远端命令用**单引号**包；⚠️ 同文件多处编辑**必须串行**；⚠️ PATH 丢失先 `export PATH="/usr/bin:/bin:/c/Users/nan/.workbuddy/binaries/PortableGit/versions/1.2.0/bin:$PATH"`
 
 ## 沙箱写文件通路（见 `os error 87` 立刻切）
 - `Edit`/`Write` 改**已存在文件** EPERM → `node .workbuddy/tmp/apply-patch-dir.js 原文件 补丁.txt 新文件` → `rm 目标 && install -m 644 新文件 目标` → `md5sum` + `node --check`
@@ -91,6 +91,8 @@
 - **出库信息单**：判断用 `_isTouchDevice()`（❌别用只看 `innerWidth` 的 `isMobile()`）；搜索**输入时不重绘弹窗**
 - **「待次日行情」**：`出库日次日 > 今天` → `await_price`，这些单**仍计入**总投入/总收益
 - **通用辅助**：`_fmtMoneySep`/`_todayLocal`(❌别用 toISOString)/`_escHtml`；表单值**一律 JS 赋值** `el.value=...`；⚠️ 标签栏窄屏会裁切，加标签先算窄屏宽度
+- **图片（入库/出库）**：`image_path` 一列存**多张**，用**英文逗号**拼（单张不带逗号，老数据兼容）→ `_imagesToPath()` 存、`_imgList()`/`_imgCellHtml()` 读、`showImagePreview()` 画图册；❌**别再写 `images[0]`**（那会让拍的第二张根本没入库）
+- ❗**接口失败必须看得见**：`API.request` 有 20s 超时；页面加载失败要给「失败原因 + 重新加载」界面，❌**别只弹 toast 就完事**（用户会看到永远「加载中...」却不知道为什么）
 - **窄屏「文字被切」**：先怀疑**整排溢出被容器裁掉**（`.card{overflow:hidden}` + flex item `min-width:auto` 不肯缩），**解法是给容器 `overflow-x:auto` + 子项 `flex:1 0 auto`，不是换行**（`.tabs`、`.card-header .btn-group` 都照这个改）
 
 ## 无浏览器自检（`frontend-logic-check` skill）
