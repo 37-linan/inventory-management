@@ -634,13 +634,14 @@ ${rowsHtml}
     try {
       // 重新拉一次商品表，确保能判断这个编码是否已存在
       try { this._allProducts = await API.get('/api/main/products'); } catch (e) { /* 用缓存兜底 */ }
+      const beforeIds = this._idSnapshot();
       const r = await this._joinSet(code, setName, {
         name: lead.name, spec: lead.spec, unit: lead.unit,
         market_price: lead.market_price, type: lead.type, bundle_qty: lead.bundle_qty
       });
       showToast(r === 'joined' ? `${code} 已并入这一套` : `已新增编码 ${code} 并加入这一套`);
       closeModal();
-      await this.loadProducts(c.system);
+      await this._reloadPlaced(c.system, beforeIds);
     } catch (e) {
       showToast('加入失败: ' + (e.message || ''));
     }
@@ -682,6 +683,7 @@ ${rowsHtml}
     }
 
     try {
+      const beforeIds = this._idSnapshot();   // 记下录入前的商品，之后好认出"哪几个是刚录的"
       // 套装不再手填套装名：归组键就是商品名称（详见文件顶部套装说明）
       const body = { code, name, spec, unit, market_price: marketPrice, type, is_set: isSet };
       if (isSet) body.set_name = name;
@@ -699,7 +701,7 @@ ${rowsHtml}
       showToast(isSet && extraCodes.length ? `添加成功：这一套共 ${extraCodes.length + 1} 个编码` : '添加成功！');
 
       closeModal();
-      await this.loadProducts(system);
+      await this._reloadPlaced(system, beforeIds);   // 自动插到同品牌旁边，再刷新
     } catch (e) {
       showToast('添加失败: ' + e.message);
     }
@@ -759,6 +761,7 @@ ${rowsHtml}
     }
 
     try {
+      const beforeIds = this._idSnapshot();
       await API.post('/api/main/products', {
         code,
         name,
@@ -771,7 +774,7 @@ ${rowsHtml}
       });
       showToast('赠品添加成功！');
       closeModal();
-      await this.loadProducts(system);
+      await this._reloadPlaced(system, beforeIds);
     } catch (e) {
       showToast('添加赠品失败: ' + e.message);
     }
@@ -1178,6 +1181,115 @@ ${rowsHtml}
     }
   },
 
+  // ==================== 新录入的商品自动插到「同品牌旁边」 ====================
+  // 上面是「一键整理」；这里是「录完就自动归位」——不用等你想起来点整理。
+  // 做法：录入后算一次它在类型内的位置（插到同品牌、名字开头最像的那一行后面），再刷新列表。
+  // ❗整套都是新商品的才算「新行」；新编码并进已有套装的行保持原位（否则会把老套装整行挪走）
+  // ❗归位只是锦上添花：算不出来 / 写失败都不影响「商品已经录进去」这件事，只留在末尾
+  _placeNewRows(items, newSet) {
+    const rows = this._buildDisplayRows(items);
+    const isNewRow = r => (r.items || []).length > 0 && r.items.every(p => newSet.has(String(p.id)));
+    const baseRows = rows.filter(r => !isNewRow(r));
+    const newRows = rows.filter(isNewRow);
+    // 没有任何老商品（整个类型都是新录的）→ 不用动，原样返回
+    if (!newRows.length || !baseRows.length) return { rows, brands: [], loose: 0 };
+
+    const byAnchor = new Map();
+    const loose = [];
+    newRows.forEach(nr => {
+      const a = this._findBrandAnchor(baseRows, nr);
+      if (!a) { loose.push(nr); return; }
+      if (!byAnchor.has(a)) byAnchor.set(a, []);
+      byAnchor.get(a).push(nr);
+    });
+
+    const out = [];
+    baseRows.forEach(r => {
+      out.push(r);
+      if (byAnchor.has(r)) byAnchor.get(r).forEach(nr => out.push(nr));
+    });
+    loose.forEach(nr => out.push(nr));
+
+    // 收集「插到了哪些品牌旁边」，用于给用户一句明确交代（不然他们会以为商品没录进去）
+    const brands = [];
+    byAnchor.forEach((list, anchor) => {
+      const bn = this._brandOf((anchor.items[0] || {}).name || '') || String((anchor.items[0] || {}).name || '').slice(0, 6);
+      if (bn && brands.indexOf(bn) < 0) brands.push(bn);
+    });
+    return { rows: out, brands, loose: loose.length };
+  },
+
+  // 在同一类型里找「同品牌、名字开头最像」的那一行；一样像就取靠后的那个（新商品落在品牌团末尾）
+  _findBrandAnchor(baseRows, nr) {
+    const name = (nr.items[0] || {}).name || nr.set_name || '';
+    const brand = this._brandOf(name);
+    if (!brand) return null;                      // 认不出品牌 → 老实待在末尾
+    const n = this._normText(name);
+    let best = null;
+    let bestScore = -1;
+    baseRows.forEach((r, i) => {
+      const rn = (r.items[0] || {}).name || r.set_name || '';
+      if (this._brandOf(rn) !== brand) return;
+      // 主看「名字开头相同的字数」，一样才比位置 → 保证是品牌团里最后一个
+      const score = this._commonHeadLen(n, this._normText(rn)) * 1000 + i;
+      if (score > bestScore) { bestScore = score; best = r; }
+    });
+    return best;
+  },
+
+  // 录入前的 id 快照：录入后拿差集就是这次新增的商品（批量导入也能一次全找出来）
+  _idSnapshot() {
+    return new Set((this._allProducts || []).map(p => String(p.id)));
+  },
+
+  // 录入后统一走这里：先归位、再刷新列表（只重绘一次，用户看不到「先跑到最上面又跳回去」）
+  async _reloadPlaced(system, beforeIds) {
+    // ❗产品列表还没加载过就不猜「哪些是新的」——否则会把表里原有的商品全当成新商品、白重排一遍
+    if (!beforeIds || !(this._allProducts || []).length) { await this.loadProducts(system); return; }
+    try {
+      const data = await API.get('/api/main/products');
+      if (!Array.isArray(data)) throw new Error('接口返回的不是商品列表');
+      const newIds = new Set(data.filter(p => !beforeIds.has(String(p.id))).map(p => String(p.id)));
+      const brandNames = [];
+      let loose = 0;
+      if (newIds.size) {
+        // 只重排「有新增商品」的那些类型，其它类型一动不动
+        const byType = {};
+        const order = [];
+        data.forEach(p => {
+          const t = p.type || '未分类';
+          if (!byType[t]) { byType[t] = []; order.push(t); }
+          byType[t].push(p);
+        });
+        for (const t of order) {
+          const items = byType[t];
+          if (!items.some(p => newIds.has(String(p.id)))) continue;
+          const plan = this._placeNewRows(items, newIds);
+          const ids = [];
+          plan.rows.forEach(r => (r.items || []).forEach(p => ids.push(p.id)));
+          if (ids.length === items.length) {
+            await API.post('/api/main/products/reorder', { orderedIds: ids });
+          }
+          plan.brands.forEach(b => { if (brandNames.indexOf(b) < 0) brandNames.push(b); });
+          loose += plan.loose;
+        }
+      }
+      // 说清楚插到哪了 —— 不然新商品不在列表末尾，用户会以为没录进去
+      if (brandNames.length) {
+        const head = brandNames.slice(0, 2).join('、');
+        showToast(brandNames.length > 2
+          ? `已插到同品牌旁边：${head} 等 ${brandNames.length} 个品牌`
+          : `已插到「${head}」旁边`);
+      } else if (loose) {
+        showToast(`已添加 ${loose} 个商品（没认出品牌，加在类型末尾）`);
+      }
+    } catch (e) {
+      // 归位失败不影响录入结果，顺序下次点「🧠 智能整理」也能修回来
+      console.warn('新商品自动归位失败：', e);
+    }
+    await this.loadProducts(system);
+  },
+
   // ===== 顶部信息仪表盘 =====
   async _renderDashboard(system, products) {
     const dash = document.getElementById(`products-dashboard-${system}`);
@@ -1534,6 +1646,7 @@ ${rowsHtml}
 
     const lines = text.split('\n').filter(l => l.trim());
     let success = 0, fail = 0, errors = [];
+    const beforeIds = this._idSnapshot();   // 导入完成后统一按品牌归位
 
     for (let i = 0; i < lines.length; i++) {
       // 支持英文逗号、中文逗号、制表符作为分隔符
@@ -1573,7 +1686,7 @@ ${rowsHtml}
     `;
 
     if (success > 0) {
-      await this.loadProducts(system);
+      await this._reloadPlaced(system, beforeIds);   // 批量导入的也一起插到同品牌旁边
     }
   },
 
