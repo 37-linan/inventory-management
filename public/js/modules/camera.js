@@ -167,16 +167,31 @@ const CameraCapture = {
   }
 };
 
-// 照片预览弹窗
+// 照片预览弹窗（支持多张：image_path 里用英文逗号分隔，2026-10-09 起）
 function showImagePreview(path) {
-  showModal('图片预览');
-  const filename = (path.split('/').pop() || 'image').replace(/[\\/:*?"<>|]/g, '_') || 'image.jpg';
+  const list = String(path == null ? '' : path).split(',').map(s => s.trim()).filter(Boolean);
+  if (!list.length) { showToast('没有可查看的图片'); return; }
+  const multi = list.length > 1;
+  showModal(multi ? `图片预览（共 ${list.length} 张）` : '图片预览');
+
+  const one = (p, i) => {
+    const raw = (p.split('/').pop() || 'image').replace(/[\\/:*?"<>|]/g, '_') || 'image.jpg';
+    // 多张时给文件名编号，免得保存出来重名
+    const filename = (multi ? `第${i + 1}张_${raw}` : raw).replace(/'/g, "\\'");
+    const safePath = p.replace(/'/g, "\\'");
+    return `
+      <div style="${i ? 'margin-top:16px;padding-top:16px;border-top:1px dashed var(--border);' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <span style="font-size:12px;color:var(--text-secondary);">${multi ? `第 ${i + 1} / ${list.length} 张` : ''}</span>
+          <button class="btn btn-sm btn-secondary" onclick="saveImageAs('${safePath}','${filename}')">💾 保存图片</button>
+        </div>
+        <img src="${p}" style="max-width:100%;max-height:${multi ? '58vh' : '70vh'};border-radius:8px;" />
+      </div>`;
+  };
+
   document.getElementById('modal-body').innerHTML = `
     <div style="text-align:center;">
-      <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;">
-        <button class="btn btn-sm btn-secondary" onclick="saveImageAs('${path.replace(/'/g, "\\'")}','${filename.replace(/'/g, "\\'")}')">💾 保存图片</button>
-      </div>
-      <img src="${path}" style="max-width:100%;max-height:70vh;border-radius:8px;" />
+      ${list.map(one).join('')}
     </div>
   `;
 }

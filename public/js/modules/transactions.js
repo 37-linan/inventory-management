@@ -170,6 +170,25 @@ const TransactionsModule = {
     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   },
 
+  // 图片路径列表：一张或多张（多张在 image_path 里用英文逗号分隔，2026-10-09 起支持）
+  _imgList(imagePath) {
+    return String(imagePath == null ? '' : imagePath).split(',').map(s => s.trim()).filter(Boolean);
+  },
+
+  // 表单里拍好的图片 → 存库用的字符串（多张逗号拼接；❌别再只取 [0]，那样拍两张只存一张）
+  _imagesToPath(arr) {
+    return (arr && arr.length) ? arr.join(',') : '';
+  },
+
+  // 记录表「图片」列：一张显示「图片查看」，多张显示「图片查看(N)」
+  _imgCellHtml(imagePath) {
+    const list = this._imgList(imagePath);
+    if (!list.length) return '-';
+    const label = list.length > 1 ? `图片查看(${list.length})` : '图片查看';
+    const safe = String(imagePath).replace(/'/g, "\\'");
+    return `<a href="javascript:void(0)" onclick="showImagePreview('${safe}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">${label}</a>`;
+  },
+
   // ================================================================
   //  标签页1：入库登记单（表单 + 入库记录表）
   // ================================================================
@@ -611,7 +630,7 @@ const TransactionsModule = {
           <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','quantity',${r.id},this)" title="点击修改数量"><strong style="color:var(--success);">+${this._fmtQty(r.quantity)}</strong></td>
           <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','channel',${r.id},this)" title="点击修改渠道"><span class="badge badge-inbound">${r.channel || '-'}</span></td>
           <td style="cursor:pointer;" onclick="TransactionsModule._editInboundCell('${system}','purchase_price',${r.id},this)" title="点击修改价格">${r.purchase_price ? '¥' + r.purchase_price : '-'}</td>
-          <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">图片查看</a>` : '-'}</td>
+          <td>${this._imgCellHtml(r.image_path)}</td>
           <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteInbound('${system}',${r.id})">删除</button></td>
         </tr>`;
       });
@@ -1161,7 +1180,7 @@ const TransactionsModule = {
     const orderNo = document.getElementById('inbound-order').value.trim();
     const price = parseFloat(document.getElementById('inbound-price').value) || 0;
     const remark = document.getElementById('inbound-remark').value.trim();
-    const imagePath = this.inboundImages.length > 0 ? this.inboundImages[0] : '';
+    const imagePath = this._imagesToPath(this.inboundImages);
 
     if (!code || !quantity) { showToast('请填写编码和数量'); return; }
     // 一单多品：首个商品必须登记单号
@@ -1376,7 +1395,7 @@ const TransactionsModule = {
           <td style="cursor:pointer;" onclick="TransactionsModule._editOutboundCell('${system}','quantity',${r.id},this)" title="点击修改数量"><strong style="color:var(--danger);">-${this._fmtQty(r.quantity)}</strong></td>
           <td style="cursor:pointer;" onclick="TransactionsModule._editOutboundCell('${system}','location',${r.id},this)" title="点击修改地点">${r.location ? this._escHtml(r.location) : '<span style="color:#bbb;font-size:11px;">未填</span>'}</td>
           <td style="cursor:pointer;" onclick="TransactionsModule._editOutboundCell('${system}','order_no',${r.id},this)" title="点击修改订单号">${r.order_no ? '<span style="color:var(--primary);font-size:12px;">📦 ' + this._escHtml(r.order_no) + '</span>' : '<span style="color:#bbb;font-size:11px;">未填</span>'}</td>
-          <td>${r.image_path ? `<a href="javascript:void(0)" onclick="showImagePreview('${r.image_path}')" style="color:var(--primary);font-size:12px;text-decoration:none;white-space:nowrap;">图片查看</a>` : '-'}</td>
+          <td>${this._imgCellHtml(r.image_path)}</td>
           <td><button class="btn btn-sm btn-danger" onclick="TransactionsModule.deleteOutbound('${system}',${r.id})">删除</button></td>
         </tr>`;
       }).join('');
@@ -1390,7 +1409,7 @@ const TransactionsModule = {
     const quantity = parseFloat(document.getElementById('outbound-qty').value);
     const location = document.getElementById('outbound-location').value.trim();
     const orderNo = document.getElementById('outbound-order-no').value.trim();
-    const imagePath = this.outboundImages.length > 0 ? this.outboundImages[0] : '';
+    const imagePath = this._imagesToPath(this.outboundImages);
 
     if (!code || !quantity) { showToast('请填写编码和数量'); return; }
 

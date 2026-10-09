@@ -29,13 +29,14 @@ const ProductsModule = {
   },
 
   async loadProducts(system) {
+    const container = document.getElementById(`products-list-${system}`);
     try {
       // 所有产品统一加载（包含抖音刷券）
-      const filtered = await API.get('/api/main/products');
+      const data = await API.get('/api/main/products');
+      // 万一接口回的不是数组（网关报错页/格式变了），早报错，别硬跑下去把页面卡死
+      if (!Array.isArray(data)) throw new Error('接口返回的不是商品列表');
+      const filtered = data;
       this._allProducts = filtered; // 供搜索弹窗使用
-      const container = document.getElementById(`products-list-${system}`);
-      // 渲染顶部仪表盘
-      await this._renderDashboard(system, filtered);
 
       if (filtered.length === 0) {
         container.innerHTML = `
@@ -48,6 +49,7 @@ const ProductsModule = {
             </div>
           </div>
         `;
+        await this._renderDashboard(system, filtered);
         return;
       }
 
@@ -173,6 +175,9 @@ ${rowsHtml}
 
       container.innerHTML = html;
 
+      // ❗仪表盘放在列表之后渲染：它内部还要再拉一次库存接口，慢或失败都不该拖住整张列表
+      await this._renderDashboard(system, filtered);
+
       // 绑定每组分组的拖拽排序
       document.querySelectorAll('#products-list-' + system + ' tbody[data-group]').forEach(tbody => {
         this._enableRowDrag(tbody, system);
@@ -217,7 +222,23 @@ ${rowsHtml}
         }
       }
     } catch (e) {
-      showToast('加载产品数据失败: ' + e.message);
+      const msg = (e && e.message) || '未知错误';
+      showToast('加载产品数据失败: ' + msg);
+      // ❗以前只弹 2.5 秒提示就没了，页面永远停在「加载中...」——现在给明确的失败界面 + 重试入口
+      if (container) {
+        container.innerHTML = `
+          <div class="card">
+            <div class="card-body">
+              <div class="empty-state">
+                <div class="empty-icon">⚠️</div>
+                <p style="color:var(--danger);font-weight:600;">产品数据加载失败</p>
+                <p style="color:var(--text-secondary);font-size:13px;margin:6px 0 14px;">${this._esc(msg)}</p>
+                <button class="btn btn-primary" onclick="ProductsModule.loadProducts('${system}')">🔄 重新加载</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
     }
   },
 
