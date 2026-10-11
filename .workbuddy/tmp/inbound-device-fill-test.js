@@ -9,7 +9,7 @@
  *   A. 后端 PATCH /inbound/batch-device —— 批量写 device、非法值挡掉、路由顺序对
  *      ❗路由顺序很关键：'/inbound/:id' 必须排在 '/inbound/batch-device' 之后，
  *        否则 Express 会把 'batch-device' 当成 id，补填直接坏掉。
- *   B. 入库记录表渲染 —— 「整单一条都没填」才出按钮；填过的只显示 🏷️ 设备名
+ *   B. 入库记录表渲染 —— 「整单一条都没填」才出按钮；填过的组头不加任何标识（无 🏷️）
  *      ❗判定必须用全量记录（all），筛选状态下不能把"没填"当成"填了"
  *   C. 补填弹窗 + 提交 —— 补填范围 = 该单号的**全部**记录（不是筛选命中的那几条）
  *
@@ -144,7 +144,7 @@ const mkRes = () => ({ _status: 200, _json: null, status(c) { this._status = c; 
     // SF001：两条都没填 → 应该出「补填」按钮
     { id: 1, product_code: 'A1', quantity: 2, device: '', channel: '淘宝', order_no: 'SF001', purchase_price: 100, row_color: '', image_path: '', created_at: '2026-10-01 10:00:00' },
     { id: 2, product_code: 'A2', quantity: 1, device: '', channel: '淘宝', order_no: 'SF001', purchase_price: 0, row_color: '', image_path: '', created_at: '2026-10-01 10:01:00' },
-    // SF002：入库时就填了设备 → 不出按钮，只显示 🏷️
+    // SF002：入库时就填了设备 → 不出按钮，也不加任何标识
     { id: 3, product_code: 'A3', quantity: 3, device: '1', channel: '京东', order_no: 'SF002', purchase_price: 50, row_color: '', image_path: '', created_at: '2026-10-02 09:00:00' },
     // SF003：只有 id 大的那条填了 → 整单算「填过」，不出按钮；显示的是最早那条设备
     { id: 4, product_code: 'A1', quantity: 1, device: '', channel: '滴滴', order_no: 'SF003', purchase_price: 10, row_color: '', image_path: '', created_at: '2026-10-03 08:00:00' },
@@ -232,11 +232,11 @@ const mkRes = () => ({ _status: 200, _json: null, status(c) { this._status = c; 
     ok(/event\.stopPropagation\(\)/.test(g001), 'B.3 ❗按钮阻止冒泡（否则点补填会顺带把这一单折叠起来）');
 
     ok(!/补填下单设备/.test(g002), 'B.4 ❗SF002（入库时就填了设备）→ 没有补填按钮');
-    ok(/🏷️ 1|🏷️&#\d+;? ?1|🏷️/.test(g002), 'B.5 SF002 → 组头显示 🏷️ 设备名');
-    ok(/🏷️[\s\S]{0,40}1/.test(g002), 'B.6 SF002 显示的是设备「1」');
+    ok(!/🏷️/.test(g002), 'B.5 ❗SF002（填过设备）→ 组头不加任何标识（2026-10-12 用户要求去掉 🏷️）');
+    ok(!/🏷️/.test(html), 'B.6 ❗整张表任何单号都不再出现 🏷️ 图标');
 
     ok(!/补填下单设备/.test(g003), 'B.7 SF003（只有后加的那条填了）→ 整单算填过，不出按钮');
-    ok(/🏷️/.test(g002) && !/🏷️/.test(g001), 'B.8 没填的单子不显示 🏷️（改用按钮），填过的才显示 🏷️');
+    ok(!/🏷️/.test(g003), 'B.8 ❗SF003（填过）→ 同样不加任何标识');
 
     ok(/补填下单设备/.test(g004), 'B.9 SF004（没填）→ 出按钮');
 
@@ -246,7 +246,8 @@ const mkRes = () => ({ _status: 200, _json: null, status(c) { this._status = c; 
 
     // 顺序：SF001 是 id 最小的，它的设备取「李楠」？
     // SF003 的两条：id4 没填、id5 是李楠 → 按 id 升序取第一条填了值的 = 李楠
-    ok(/李楠/.test(g003), 'B.12 ❗SF003 显示的设备 = 按 id 升序第一条填了值的（李楠）');
+    // ⚠️ 2026-10-12 起组头不再显示设备名，但「整单算不算填过」的判定仍按这条规则
+    ok(!/李楠/.test(html), 'B.12 ❗填过的单号不再把设备名显示到组头（李楠 不出现）');
 
     // 全填过的场景 → 一个按钮都不该有
     const r2 = createTrRuntime(IN_ROWS.filter(r => r.device));

@@ -605,7 +605,9 @@ const TransactionsModule = {
       const cacheKey = `g${gi}`;
       this._groupStatsCache[cacheKey] = items;
       const collapsed = this._collapsedGroups.has(orderNo);   // 重绘后仍保持收起
-      // 这一单有没有填过「下单设备 / 下级」：没填才给「补填」按钮，填过的只显示是什么
+      // 这一单有没有填过「下单设备 / 下级」：没填才给「补填」按钮
+      // ⚠️ 填过的单子**不加任何标识** —— 按钮不出现本身就说明填过了
+      //    （2026-10-12 用户要求：去掉组头的设备名标识，别再加回来）
       const orderDevice = orderDeviceMap[orderNo] || '';
 
       // 组头行：跨整行，显示订单号 + 汇总信息
@@ -613,9 +615,7 @@ const TransactionsModule = {
         <td colspan="10" style="padding:8px 12px;border-top:2px solid ${groupColor || 'transparent'};">
           <span style="display:inline-block;width:14px;text-align:center;" id="${groupId}-icon">${collapsed ? '▸' : '▾'}</span>
           <span style="color:var(--primary);">📦 ${orderNo}</span>
-          ${orderDevice
-            ? `<span style="color:var(--text-secondary);margin-left:10px;font-size:12px;font-weight:normal;" title="这一单的下单设备 / 下级">🏷️ ${this._escHtml(orderDevice)}</span>`
-            : `<button class="btn btn-sm btn-warning" style="margin-left:10px;padding:1px 8px;font-size:11px;font-weight:normal;vertical-align:middle;" onclick="event.stopPropagation();TransactionsModule.showFillDevice('${cacheKey}')" title="这一单还没填下单设备 / 下级，点这里补上">📝 补填下单设备</button>`}
+          ${orderDevice ? '' : `<button class="btn btn-sm btn-warning" style="margin-left:10px;padding:1px 8px;font-size:11px;font-weight:normal;vertical-align:middle;" onclick="event.stopPropagation();TransactionsModule.showFillDevice('${cacheKey}')" title="这一单还没填下单设备 / 下级，点这里补上">📝 补填下单设备</button>`}
           <span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">${firstTime}</span>
           ${filtering
             ? `<span style="color:var(--warning);margin-left:12px;font-size:12px;font-weight:normal;">命中 ${items.length} 条 · 本单共 ${orderTotals[orderNo] || items.length} 条</span>`
@@ -1291,7 +1291,7 @@ const TransactionsModule = {
 
   // ===== 补填「下单设备 / 下级」（2026-10-12 用户要求）=====
   // 只有「整单一条都没填过设备」的单号，组头才出现 📝 补填下单设备 按钮；
-  // 入库时就填过的单子不会出现按钮（只在单号后面显示 🏷️ 设备名）。
+  // 入库时就填过的单子不会出现按钮，组头也不加任何标识（2026-10-12 用户要求）。
   // ⚠️ 补填范围 = 该单号的**全部**记录（不是当前筛选命中的那几条），否则设备归属会对不上。
   showFillDevice(cacheKey) {
     const items = (this._groupStatsCache || {})[cacheKey];
