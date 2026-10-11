@@ -855,6 +855,27 @@ module.exports = function(db) {
     }
   });
 
+  // 补填「下单设备 / 下级」：一整单都没填的，事后一次性补上（2026-10-12 用户要求）
+  // ❗必须注册在 /inbound/:id 之前：Express 按注册顺序匹配，否则 ':id' 会把 'batch-device' 吃掉。
+  // ❗设备归属按「该单 id 最小的那条已填设备」算，所以整单统一写成同一个值才对得上口径。
+  router.patch('/inbound/batch-device', async (req, res) => {
+    try {
+      const { ids, device } = req.body;
+      if (!ids || !Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: '请选择要补填的入库记录' });
+      const dev = String(device == null ? '' : device).trim();
+      if (!dev) return res.status(400).json({ error: '请填写下单设备 / 下级' });
+
+      const placeholders = ids.map(() => '?').join(',');
+      await db.query(
+        `UPDATE main_inbound SET device = ? WHERE id IN (${placeholders})`,
+        [dev, ...ids]
+      );
+      res.json({ success: true, updated: ids.length });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // 行内编辑：修改单条入库记录的数量 / 渠道 / 价格（只更新传进来的字段）
   router.patch('/inbound/:id', async (req, res) => {
     try {

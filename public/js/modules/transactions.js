@@ -543,6 +543,15 @@ const TransactionsModule = {
       orderTotals[k] = (orderTotals[k] || 0) + 1;
     });
 
+    // 整单的「下单设备 / 下级」：按 id 升序取第一条填了值的（跟利润里的设备归属完全一致）
+    // ⚠️ 用 all（全量）而不是 records（筛选结果），否则筛选时会误判成"没填"
+    const orderDeviceMap = {};
+    [...all].sort((a, b) => a.id - b.id).forEach(r => {
+      const k = r.order_no || '（无单号）';
+      const d = String(r.device || '').trim();
+      if (d && !orderDeviceMap[k]) orderDeviceMap[k] = d;
+    });
+
     // 按订单号分组
     const groups = {};
     records.forEach(r => {
@@ -596,12 +605,17 @@ const TransactionsModule = {
       const cacheKey = `g${gi}`;
       this._groupStatsCache[cacheKey] = items;
       const collapsed = this._collapsedGroups.has(orderNo);   // 重绘后仍保持收起
+      // 这一单有没有填过「下单设备 / 下级」：没填才给「补填」按钮，填过的只显示是什么
+      const orderDevice = orderDeviceMap[orderNo] || '';
 
       // 组头行：跨整行，显示订单号 + 汇总信息
       html += `<tr class="group-header" style="cursor:pointer;background:${groupColor || '#eef2f7'};font-weight:600;" onclick="TransactionsModule._toggleGroupRows('${groupId}','${cacheKey}')">
         <td colspan="10" style="padding:8px 12px;border-top:2px solid ${groupColor || 'transparent'};">
           <span style="display:inline-block;width:14px;text-align:center;" id="${groupId}-icon">${collapsed ? '▸' : '▾'}</span>
           <span style="color:var(--primary);">📦 ${orderNo}</span>
+          ${orderDevice
+            ? `<span style="color:var(--text-secondary);margin-left:10px;font-size:12px;font-weight:normal;" title="这一单的下单设备 / 下级">🏷️ ${this._escHtml(orderDevice)}</span>`
+            : `<button class="btn btn-sm btn-warning" style="margin-left:10px;padding:1px 8px;font-size:11px;font-weight:normal;vertical-align:middle;" onclick="event.stopPropagation();TransactionsModule.showFillDevice('${cacheKey}')" title="这一单还没填下单设备 / 下级，点这里补上">📝 补填下单设备</button>`}
           <span style="color:var(--text-secondary);margin-left:12px;font-size:12px;font-weight:normal;">${firstTime}</span>
           ${filtering
             ? `<span style="color:var(--warning);margin-left:12px;font-size:12px;font-weight:normal;">命中 ${items.length} 条 · 本单共 ${orderTotals[orderNo] || items.length} 条</span>`
@@ -1272,6 +1286,75 @@ const TransactionsModule = {
       await this._refreshInboundTable(system);
     } catch (e) {
       showToast('删除失败');
+    }
+  },
+
+  // ===== 补填「下单设备 / 下级」（2026-10-12 用户要求）=====
+  // 只有「整单一条都没填过设备」的单号，组头才出现 📝 补填下单设备 按钮；
+  // 入库时就填过的单子不会出现按钮（只在单号后面显示 🏷️ 设备名）。
+  // ⚠️ 补填范围 = 该单号的**全部**记录（不是当前筛选命中的那几条），否则设备归属会对不上。
+  showFillDevice(cacheKey) {
+    const items = (this._groupStatsCache || {})[cacheKey];
+    if (!items || !items.length) { showToast('数据已刷新，请再点一次'); return; }
+    const system = this._inboundSystem || 'main';
+    const orderNo = items[0].order_no || '（无单号）';
+    const ids = (this._inboundAllRecords || [])
+      .filter(r => (r.order_no || '（无单号）') === orderNo)
+      .map(r => r.id);
+    if (!ids.length) { showToast('这一单没有可补填的记录'); return; }
+    this._fillDeviceIds = ids;
+
+    const options = this._inboundDeviceOptions();
+    showModal('📝 补填下单设备 / 下级');
+    const body = document.getElementById('modal-body');
+    body.innerHTML = `
+      <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
+        单号 <strong style="color:var(--primary);">${this._escHtml(orderNo)}</strong> 这 <strong>${ids.length}</strong> 条记录都没有填「下单设备 / 下级」，
+        补上后整单一起生效（设备投入、盈亏拆分都会算到它名下）。
+      </div>
+      ${options.length ? `<div style="margin-bottom:12px;">
+        <div style="font-size:12px;color:var(--text-light);margin-bottom:6px;">之前用过的（点一下就填上）：</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+          ${options.map(d => `<span class="filter-chip" style="cursor:pointer;" onclick="TransactionsModule._pickFillDevice(this)" data-device="${this._escHtml(d)}">${this._escHtml(d)}</span>`).join('')}
+        </div>
+      </div>` : ''}
+      <div class="form-group">
+        <label>下单设备 / 下级 <span style="color:var(--danger)">*</span></label>
+        <input type="text" id="fill-device" list="fill-device-options" placeholder="设备名称或下级单位，例如 1 / 李楠" />
+        <datalist id="fill-device-options">${options.map(d => `<option value="${this._escHtml(d)}"></option>`).join('')}</datalist>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button class="btn btn-primary btn-lg" style="flex:1;" onclick="TransactionsModule.submitFillDevice('${system}')">保存</button>
+        <button class="btn btn-secondary btn-lg" style="flex:1;" onclick="closeModal()">取消</button>
+      </div>
+    `;
+    setTimeout(() => { const el = document.getElementById('fill-device'); if (el) el.focus(); }, 100);
+  },
+
+  // 点「用过的设备」胶囊 → 填进输入框（手机上 datalist 不好用，给个能点的）
+  _pickFillDevice(el) {
+    const input = document.getElementById('fill-device');
+    if (!input || !el) return;
+    input.value = el.dataset.device || el.textContent.trim();
+    el.classList.add('active');
+    input.focus();
+  },
+
+  async submitFillDevice(system) {
+    const input = document.getElementById('fill-device');
+    const device = input ? String(input.value || '').trim() : '';
+    const ids = this._fillDeviceIds || [];
+    if (!device) { showToast('请填写下单设备 / 下级'); return; }
+    if (!ids.length) { showToast('没有要补填的记录'); return; }
+    try {
+      await API.patch(`/api/${system}/inbound/batch-device`, { ids, device });
+      showToast(`已为这 ${ids.length} 条记录补上「${device}」`);
+      this._fillDeviceIds = [];
+      closeModal();
+      await this._refreshInboundTable(system);
+      if (this.currentTab === 'ledger') await this.renderLedgerTab(system);
+    } catch (e) {
+      showToast('补填失败: ' + e.message);
     }
   },
 
