@@ -121,8 +121,8 @@
   - ⚠️ **亏损日只要有单仍会显示**（绿柱），不按 `profit>0` 过滤 —— 否则累计折线漏负值
 
 ## 设备/下级的**上级汇总**（09-28 新增）
-- 需求：把「下单设备/下级」里的 `1`/`2`/`3` 在**设备投入弹窗里**汇总成一行「李楠」，点它展开看各自成本/盈亏；**其它地方（台账、明细、筛选下拉）仍按原设备名区分**（用户明确要求）
-- 配置：`TransactionsModule.DEVICE_GROUPS = [{ name:'李楠', devices:['1','2','3'] }]`（`transactions.js` 顶部 `ROW_COLORS` 之后）；可配多个、可改名；没配到的照旧单独一行；组里一个设备都没出过库 → 该行不出现
+- 需求：把「下单设备/下级」里的 `1`/`2`/`3`/`4` 在**设备投入弹窗里**汇总成一行「李楠」，点它展开看各自成本/盈亏；**其它地方（台账、明细、筛选下拉）仍按原设备名区分**（用户明确要求）
+- 配置：`TransactionsModule.DEVICE_GROUPS = [{ name:'李楠', devices:['1','2','3','4'] }]`（`transactions.js` 顶部 `ROW_COLORS` 之后；10-13 加入 `'4'`）；可配多个、可改名；没配到的照旧单独一行；组里一个设备都没出过库 → 该行不出现。**加设备只改这一行**（`devices` 数组按配置顺序拼徽章）
 - 实现：`_showDeviceBreakdown` 聚出组行（`this._devGroupRows`）+ 未归组行，按投入降序存 `this._devRows`（**点击按下标取**）
   - 组行：名字 + 徽章 `1 · 2 · 3` + 操作列「展开 ›」（设备行仍是「明细 ›」）
   - `_showDeviceGroup(idx)` → 二级弹窗「李楠 · 上级汇总」；`_showGroupMemberOrders(gIdx,mIdx)`/`_showDeviceOrders(idx)` → `_showDeviceOrdersByName(dev, fromGroupIdx)`；`fromGroupIdx` 有值时「返回」回上级那层
@@ -144,6 +144,14 @@
 - **设备归属**：一单的设备 = 该单**第一个填了值的商品**（按 id 升序）；不同设备**不拆**整单
 - ⚠️ 设备名已统一（`林浩东`/`林h东` 合并，09-18，备份表 `main_inbound_dev_bak_20260918`）；防复发靠 `<datalist>` 只提示不限制
 - ✅ **订单号填成人名 = 正常现象**（没单号就拿名字占位，不参与计算）
+- ✅ **「📝 补填下单设备 / 下级」**（10-12 用户要求）：入库时没填设备的单子，事后能补
+  - 判定：`_renderInboundRows` 里先算 `orderDeviceMap`（**按 id 升序取第一条 device 非空**，与「设备归属」口径完全一致）；**用 `all` 全量算，❌ 不能用筛选结果 `records`**，否则一筛选就误判成「没填」
+  - 组头：`orderDevice` 为空 → 出 `📝 补填下单设备` 按钮（`showFillDevice(cacheKey)`，`event.stopPropagation()` 防止顺带折叠）；非空 → **什么都不加**（❗10-12 用户要求去掉组头的 `🏷️ 设备名`，别再加回来）
+  - ❗**按钮判定是「整单一条都没填」**：只有后加的那条填了也算「填过」→ 不出按钮
+  - 补填弹窗：`showFillDevice` / `_pickFillDevice`（点「用过的设备」胶囊）/ `submitFillDevice`；范围 = 该单号**全部记录**（`_inboundAllRecords` 里按 `order_no` 取，❌ 不是 `_groupStatsCache` 里筛选后的那几条）；存 `this._fillDeviceIds`
+  - 后端 `PATCH /inbound/batch-device`（body `{ids, device}`，`UPDATE ... WHERE id IN (...)`，device trim 后不能为空）
+    ❗❗**必须注册在 `/inbound/:id` 之前**，否则 Express 把 `batch-device` 当成 `id` 吃掉
+  - 保存后整表重刷 + `currentTab==='ledger'` 时重算台账（设备投入/盈亏拆分跟着变）
 
 ## 出库登记单（10-05 补上行内编辑）
 - **行内编辑**：`_editOutboundCell(system, field, id, el)`，3 格可点就地改 —— **数量 / 地点 / 订单号**
@@ -201,6 +209,48 @@
   ❗`flex:1`（=`1 1 0%`）看似能压缩，实则 flex item `min-width:auto` 让按钮**不缩到内容宽度以下**，
   整排溢出后被 `.card{overflow:hidden}` 裁掉（表现＝最后一个按钮只露半个字）。
   **教训：窄屏「文字被切」先怀疑「整排溢出被容器裁掉」，别只想着换行/省略号**
+
+## 产品信息表「🧠 智能整理」同品牌归位（10-09 新增）
+- 商品名**没有品牌字段** → 只能从名称认品牌，三层：
+  ① 内置词表 `_brandTable()`（别名归一，**命中的关键词最长者胜出**）
+  ② 词表认不出的：**名称开头连续 ≥2 字相同**的互相抱团（≥2 行才算团，团名 = 名称前 6 字加 `≈`）
+  ③ 都不成的**保持原位**（key = `'~'+行号`），❌绝不硬塞进别家的团
+- 别名归一举例：`Redmi/Redml/RedMe/红米/米家/小爱/小米` → 小米；`巴黎欧莱雅` → 欧莱雅；
+  `Whoo/水妍/天气丹/天率丹` → Whoo；`菌菇水` → 悦木之源；`GPW/罗技` → 罗技；`欧乐b/Oral-B` → 欧乐B
+- ❗❗**单字关键词不参与「包含」匹配**（如 `后`）——否则满屏误伤。
+  ❗`娇兰` ≠ `娇韵诗`（都以「娇」开头，**只能靠词表，别用公共前缀去猜品牌**）
+- 排序口径：**只在「类型」分组内**排；主键 = 品牌团**首现行号**（团与团保持原有大致先后，最温和），
+  次键 = `归一名称|归一规格`，比较用 `localeCompare('zh-Hans-CN')`
+- ❗❗先 `_buildDisplayRows()` 把**套装合成一行**再排 → **同一套装的多个编码绝不打散**（打散＝利润算重，参考 09-24 事故）
+- 流程：`smartSortClick()` → `showSmartSort()` 弹**预览**（列出每个类型会排成几个品牌组）→ `applySmartSort()` 才写库
+  - 写库复用 `POST /api/main/products/reorder`，**按类型逐组各发一次**（每类型 sort_order 各自 1..n，比一次性全量规整）
+- 撤销：整理前的顺序**按类型**存 `localStorage['products-smart-undo-' + system]` → 按钮自动变「↩️ 撤销整理」
+  → `undoSmartSort()` 写回后清记录；❗写库失败**保留**撤销记录（能一键还原，不至于卡半路）
+- 自检：`tmp/smart-sort-test.js`（109 项：识别/不误伤/团内连续/id 守恒/套装打散/UI 全链路/失败路径）
+  + `tmp/smart-sort-live.js`（拿线上 130 条体检：129 行 → 53 团，0 未识别）
+- **以后新增品牌就往 `_brandTable()` 加一条 `{ brand, keys: [...] }` 即可**
+
+### 录完自动归位（10-09 第二轮：「新录入的商品自动插到同品牌旁边」）
+- 4 个录入入口统一走 `_reloadPlaced(system, beforeIds)`：`submitAdd` / `submitBatchImport` /
+  `submitAddCodeToSet` / `submitAddGift`
+  - `beforeIds = _idSnapshot()`（**录入前**拍 id 快照）→ 录入后重新拉列表，
+    **差集就是这次新增的商品** —— 不依赖接口返回值，批量导入也能一次全找出来
+- ❗**只重排「有新增商品」的类型**，其它类型一个请求都不发（编辑保存那类不该触发重排）
+- 定位：`_findBrandAnchor()` 找「**同品牌 + 名字开头相同字数最多**」的那一行 → 插到它后面；
+  分数 = `公共前缀长度 × 1000 + 行号` → 一样像取靠后的（新商品落在**品牌团末尾**，可预期）
+- ❗❗**整行都是新商品才算「新行」**：新编码并进**已有套装**的行 → 该行保持原位
+  （否则会把老套装整行挪到末尾，成套显示就乱了）
+- 认不出品牌 → 锚点 `null`，老实待在类型末尾
+- ❗**产品列表没加载过（`_allProducts` 空）不瞎猜**，只刷新 —— 否则会把表里原有商品全当成新的、白重排一遍
+- ❗归位**失败不影响「商品已经录进去」**：catch 里只 `console.warn`，照样 `loadProducts`；
+  顺序下次点「🧠 智能整理」能修回来
+- 全程**只重绘一次列表**（先算位置再渲染），用户看不到「先跳到最上面又跳回去」
+- toast 说清插到哪：`已插到「海飞丝」旁边` / `已插到同品牌旁边：A、B 等 N 个品牌` /
+  `已添加 N 个商品（没认出品牌，加在类型末尾）`
+- 自检 `tmp/auto-place-test.js`（44 项：锚点 / 套装不拆 / 只动该类型 / id 守恒 / 失败兜底 /
+  `submitAdd` 与批量导入全链路）
+- ⚠️ 改这里会牵动 `tmp/frontend-set-test.js`（它数「一次保存建了几个编码」）——
+  该测试用 `_allProducts` 未加载的 mock，靠 `_allProducts` 空则不归位这条兜底才不误报
 
 ## 无浏览器自检（`frontend-logic-check` skill）
 - 前端：Node + `vm` + 最小 DOM stub 真跑模块；后端：vm 加载路由 → `router.stack.find(l => l.route.path === '/xxx').route.stack[0].handle` 取**真实 handler** + mock `db.query`（按 SQL 特征分流）+ stub `res.json` → 不启服务验证完整逻辑，还能**一次验证多处口径一致**
