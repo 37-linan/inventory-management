@@ -422,6 +422,49 @@ async function loadHoldMap(db) {
   return map;
 }
 
+// ============================================================================
+// 固返价（2026-10-14）
+// ----------------------------------------------------------------------------
+// 场景：有些单是「固返单」——不管行情怎么变，货出给别人后对方都按事先谈好的
+//       固返价结算，所以这一单的销售额是固定的，不跟着行情表走。
+// 口径（用户 2026-10-14 拍板，两个问题都选了「整单」）：
+//   · 固返价 = **这一单的结算总额**（不是单价），销售额 = 固返价本身，❌ 不再 × 数量
+//   · 按 **订单号（入库单号）** 存，整单一个价 —— 填一次，整单所有商品都用它
+// 生效时机：出库后才填（单利润明细里只有出过库的行才有按钮）；
+//          入库 → 出库之间照旧按行情，不受影响；一旦填了固返价，该单的
+//          销售/利润一律按固返价算 —— **固返价优先、不再看行情**，
+//          也不再「等次日行情」（await_price 一律置 false）。
+// ❗一处改动必须同时改三处口径：/order-profit、/dashboard、/ledger
+// ============================================================================
+let fixedReady = null;
+function ensureFixedTable(db) {
+  if (!fixedReady) {
+    fixedReady = db.query(`
+      CREATE TABLE IF NOT EXISTS main_fixed_price (
+        id SERIAL PRIMARY KEY,
+        order_no VARCHAR(120) NOT NULL,
+        price NUMERIC(14,2) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT now(),
+        updated_at TIMESTAMP NOT NULL DEFAULT now()
+      )`)
+      // 一个订单号只有一个固返价（整单一个价）；ON CONFLICT 靠这个唯一索引推断
+      .then(() => db.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_main_fixed_price_order ON main_fixed_price (order_no)'))
+      .catch(e => { fixedReady = null; throw e; });   // 失败允许下次重试
+  }
+  return fixedReady;
+}
+
+// 固返价映射：{ 订单号: 固返价总额 }（只保留 > 0 的；0 / 空一律视为「没填固返价」）
+async function loadFixedMap(db) {
+  const r = await db.query('SELECT order_no, price FROM main_fixed_price');
+  const map = {};
+  r.rows.forEach(x => {
+    const p = Number(x.price) || 0;
+    if (p > 0) map[String(x.order_no)] = p;
+  });
+  return map;
+}
+
 module.exports = function(db) {
   const router = express.Router();
 
@@ -432,6 +475,7 @@ module.exports = function(db) {
       await ensureSetColumns(db);
       await ensureHoldTable(db);   // 寄存表：利润/总览/台账都要读它（幂等，只有第一次真建）
       await ensurePriceAliasTable(db);   // 行情别名对照表：导入行情时用（幂等）
+      await ensureFixedTable(db);        // 固返价表：单利润/总览/台账都要读它（幂等）
       next();
     } catch (e) { next(e); }
   });
@@ -1204,6 +1248,32 @@ module.exports = function(db) {
     }
   });
 
+  // ========== 固返价（整单结算，不跟行情）==========
+  // 填入 / 修改 / 取消某一单的固返价（详见文件顶部「固返价」说明）
+  // body: { order_no, price } —— price > 0 保存；空 / 0 / 负数 → 取消固返价、恢复按行情
+  router.post('/fixed-price', async (req, res) => {
+    try {
+      const orderNo = String(req.body.order_no || '').trim();
+      if (!orderNo) return res.status(400).json({ error: '请先填订单号' });
+      const raw = req.body.price;
+      const price = Number(raw);
+      const isEmpty = (raw === '' || raw === null || raw === undefined);
+      if (isEmpty || !Number.isFinite(price) || price <= 0) {
+        await db.query('DELETE FROM main_fixed_price WHERE order_no = ?', [orderNo]);
+        return res.json({ success: true, order_no: orderNo, price: 0, cleared: true });
+      }
+      await db.query(
+        `INSERT INTO main_fixed_price (order_no, price) VALUES (?, ?)
+         ON CONFLICT (order_no) DO UPDATE SET price = EXCLUDED.price, updated_at = now()`,
+        [orderNo, Number(price.toFixed(2))]
+      );
+      res.json({ success: true, order_no: orderNo, price: Number(price.toFixed(2)) });
+    } catch (e) {
+      console.error('[fixed-price] 错误:', e.message);
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ========== 单利润汇总（按入库单号）==========
   // 规则：
   //  1. 成本 = 整单金额（首个商品填的 purchase_price），不随出库变化
@@ -1236,6 +1306,9 @@ module.exports = function(db) {
       // 已卖出 → 被寄存的商品改按「卖出日」的行情计价（其它商品仍按出库日）
       const holdMap = await loadHoldMap(db);
       const hm = holdMap[orderNo] || null;
+      // 固返价（2026-10-14）：这一单填了固返价 → 销售/利润一律按固返价算，不看行情
+      const fixedMap = await loadFixedMap(db);
+      const fixedTotal = fixedMap[String(orderNo)] || 0;
       const holdCodes = hm ? hm.codes : {};
       const holdSoldDay = (hm && hm.status === 'sold') ? (hm.sold_date || '') : '';
       const isHolding = !!(hm && hm.status === 'holding');
@@ -1341,12 +1414,24 @@ module.exports = function(db) {
         });
       }
 
+      // 固返价：整单按固返价总额结算 → 覆盖掉刚才按行情算出来的销售
+      // （上面行情那段照常跑完，只是这里统一改掉，保证「填了固返价就绝不用行情」）
+      if (fixedTotal > 0) {
+        totalSale = fixedTotal;
+        detail.forEach(r => {
+          if (r.out_qty > 0 && !r.set_member) r.sale = 0;   // 各行不再按行情单价计价
+          r.fixed_applied = true;
+          r.await_price = false;                            // 有固返价 → 不用再等次日行情
+        });
+      }
+
       const awaitRows = detail.filter(r => r.await_price);
 
       res.json({
         sale_price: Number(totalSale.toFixed(2)),
         cost_price: Number(totalCost.toFixed(2)),
         profit: Number((totalSale - totalCost).toFixed(2)),
+        fixed_price: Number(fixedTotal.toFixed(2)),         // 固返价总额（0 = 没填固返价）
         has_out: allShipped && !isHolding,          // 整单都出了库、且没在档口寄存 → 才计入盈亏
         holding: isHolding,                         // 发到档口寄存中（还没卖）→ 整单压着不算
         hold_sold: holdSoldDay,                     // 已卖出时：寄存部分按这一天的行情计价
@@ -1391,6 +1476,7 @@ module.exports = function(db) {
       const today = await todayOf(db);
       const setMap = await loadSetNameMap(db);   // 套装归组用（同一套装的多个编码只算一次价）
       const holdMap = await loadHoldMap(db);     // 寄存：发到档口、还没卖的单，整单压着不算
+      const fixedMap = await loadFixedMap(db);   // 固返价：填了固返价的单按固返价总额结算，不看行情
 
       const pad = n => String(n).padStart(2, '0');
 
@@ -1468,13 +1554,18 @@ module.exports = function(db) {
           }
         });
 
+        // 固返价（2026-10-14）：这一单填了固返价 → 销售直接取固返价总额，
+        // 不看行情、也不用再等次日行情（与单利润 / 台账口径一致）
+        const fixedTotal = fixedMap[String(orderNo)] || 0;
+        if (fixedTotal > 0) { sale = fixedTotal; awaitFlag = false; }
+
         sale = Number(sale.toFixed(2));
         const profit = Number((sale - cost).toFixed(2));
         invest += cost;
         revenue += sale;
         outCount++;
         if (awaitFlag) { awaitCount++; awaitRevenue += sale; }
-        orderList.push({ order_no: orderNo, cost, sale, profit, out_date: lastDay || '', device, await_price: awaitFlag });
+        orderList.push({ order_no: orderNo, cost, sale, profit, out_date: lastDay || '', device, await_price: awaitFlag, fixed_price: fixedTotal });
 
         // 按下单设备/下级汇总（只统计已出库单，与「总投入」口径一致）
         const devKey = device || '（未填）';
@@ -1822,6 +1913,8 @@ module.exports = function(db) {
       //       按该单所有商品数量分摊出"单位成本"，FIFO 消耗时 单位成本 × 出库数量
       //       收入 = 信息表单价（price_history 最新价）× 出库数量
       const costByOutId = {};
+      const outSrcMap = {};     // 出库记录 id → [{ orderNo, qty }]：这条出库消耗了哪几张入库单的货（固返价要按来源分摊）
+      const orderTotalQty = {}; // 入库单号 → 该单总入库数量（固返价按这个基数分摊到各条出库记录）
       try {
         // 1. 按 order_no 聚合所有入库单，算每单的总数量与整单金额 → 单位分摊成本
         const allIns = await db.query('SELECT * FROM main_inbound ORDER BY created_at ASC, id ASC');
@@ -1840,6 +1933,7 @@ module.exports = function(db) {
           orderInfo[key] = {
             unitPrice: totalQty > 0 ? orderTotal / totalQty : 0
           };
+          orderTotalQty[key] = totalQty;
         });
 
         // 2. 每个商品做 FIFO：入库批次成本用"整单分摊单位成本"
@@ -1853,24 +1947,27 @@ module.exports = function(db) {
             'SELECT * FROM main_outbound WHERE product_code = ? ORDER BY created_at ASC, id ASC',
             [product_code]
           );
-          // FIFO 队列：按入库时间排，先入库先消耗
+          // FIFO 队列：按入库时间排，先入库先消耗（带 orderNo，固返价要按「这批货是哪张单的」分摊）
           const queue = ins.rows.map(r => {
             const key = r.order_no || ('__no_order_' + r.id);
             const info = orderInfo[key] || { unitPrice: 0 };
-            return { qty: Number(r.quantity) || 0, price: info.unitPrice };
+            return { qty: Number(r.quantity) || 0, price: info.unitPrice, orderNo: key };
           });
           for (const ob of outs.rows) {
             let remaining = Number(ob.quantity) || 0;
             let totalCost = 0;
+            const srcs = [];
             while (remaining > 0 && queue.length > 0) {
               const batch = queue[0];
               const take = Math.min(remaining, batch.qty);
               totalCost += take * batch.price;
+              srcs.push({ orderNo: batch.orderNo, qty: take });
               batch.qty -= take;
               remaining -= take;
               if (batch.qty <= 0) queue.shift();
             }
             costByOutId[ob.id] = totalCost;
+            outSrcMap[ob.id] = srcs;
           }
         }
       } catch (e) {
@@ -1884,6 +1981,7 @@ module.exports = function(db) {
       // ⚠️ 套装（2026-09-23）：同一天出的同一套装，只在「代表条目」上记一次 套价 × 套数，
       //    其余组成商品标 set_member 且销售额记 0 —— 否则一套会被算成 N 倍
       const priceMap = await loadPriceMap(db);
+      const fixedMap = await loadFixedMap(db);   // 固返价：整单按固返价结算的单，出库记录不再按行情计价
       const setMap = await loadSetNameMap(db);
       // 寄存：发到档口、还没卖的商品，出库台账里先不认销售额（还没产生销售）
       const holdMap = await loadHoldMap(db);
@@ -1926,6 +2024,31 @@ module.exports = function(db) {
         if (!outDate) {
           ob.sale_price = 0;
           ob.profit = 0;
+          ob.price_date = '';
+          ob.price_day = '';
+          continue;
+        }
+
+        // 固返价（2026-10-14）：这条出库记录消耗的货若**全部来自同一张「固返单」**，
+        // 销售额 = 固返价 × (本次消耗量 / 该单总入库量) —— 同一单的几条出库记录加总
+        // 正好 = 整单固返价（与 /order-profit、/dashboard 口径一致：整单按固返价结算）。
+        // 固返优先：命中就整条走固返价，不再参与套装的「并入代表条目」逻辑。
+        const srcs = outSrcMap[ob.id] || [];
+        const fixedSale = (() => {
+          if (!srcs.length) return null;
+          const orders = [...new Set(srcs.map(s => s.orderNo))];
+          if (orders.length !== 1) return null;              // 混了多张单 → 不按固返价，走行情
+          const F = fixedMap[String(orders[0])] || 0;
+          const totalQ = orderTotalQty[orders[0]] || 0;
+          if (!(F > 0) || !(totalQ > 0)) return null;
+          const taken = srcs.reduce((s, x) => s + x.qty, 0);
+          return Number((F * (taken / totalQ)).toFixed(2));
+        })();
+        if (fixedSale !== null) {
+          ob.is_set = false; ob.set_name = ''; ob.set_member = false;
+          ob.fixed_price = true;
+          ob.sale_price = fixedSale;
+          ob.profit = Number((fixedSale - totalCost).toFixed(2));
           ob.price_date = '';
           ob.price_day = '';
           continue;

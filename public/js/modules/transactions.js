@@ -962,7 +962,10 @@ const TransactionsModule = {
       const awaitHint = res.await_price
         ? `<br><span style="color:#e65100;">今日出库，待 ${res.await_date} 行情，录价后自动重算</span>`
         : '';
-      detEl.innerHTML = `销售 ¥${(parseFloat(res.sale_price) || 0).toFixed(2)}<br>成本 ¥${cost.toFixed(2)}${awaitHint}`;
+      const fixedHint = (parseFloat(res.fixed_price) || 0) > 0
+        ? `<br><span style="color:#7b1fa2;">固返价 ¥${(parseFloat(res.fixed_price) || 0).toFixed(2)}</span>`
+        : '';
+      detEl.innerHTML = `销售 ¥${(parseFloat(res.sale_price) || 0).toFixed(2)}<br>成本 ¥${cost.toFixed(2)}${awaitHint}${fixedHint}`;
     }).catch(() => {
       const valEl = document.getElementById('order-profit-value');
       if (valEl) valEl.textContent = '-';
@@ -975,7 +978,7 @@ const TransactionsModule = {
   async _showOrderProfitDetail(orderNo) {
     if (!orderNo) {
       const box = document.getElementById('order-profit-box');
-      orderNo = box?.dataset?.orderNo;
+      orderNo = box?.dataset?.orderNo || this._profitOrderNo;
     }
     if (!orderNo) return;
     showModal('📊 单利润计算过程');
@@ -996,20 +999,30 @@ const TransactionsModule = {
         detailRows = res.detail.map((r, i) => {
           // 这行是不是「档口寄存 · 已卖出」：它的取价日是**卖出当天**，不是出库次日
           const isHoldSoldRow = !!(res.hold_sold && (res.hold_codes || []).includes(r.code));
+          // 本单是不是「固返单」：填了固返价 → 整单按固返价结算，各行不再按行情单独计价
+          const isFixed = (parseFloat(res.fixed_price) || 0) > 0;
           // 套装（2026-09-23）：同一套装的多个编码合成一套，销售额只记在「代表行」上，
           // 其余组成商品标出「组成」，避免看起来像被漏算了
           const setTag = r.is_set
             ? `<span class="badge" style="background:#ede7f6;color:#5e35b1;margin-left:4px;font-size:10px;">套装${r.set_name ? ' · ' + r.set_name : ''}${r.set_member ? '（组成）' : ''}</span>`
             : '';
-          const saleFormula = r.set_member
-            ? '<span style="color:var(--text-light);">并入套装行计价（不再单独算）</span>'
-            : (r.out_qty > 0
-                ? `¥${(r.next_day_price || 0).toFixed(2)} × ${r.is_set ? this._fmtQty(r.set_units || 0) + '（套数）' : r.in_qty + '（本单内数量）'} = <strong>¥${r.sale.toFixed(2)}</strong>`
-                : '<span style="color:var(--text-light);">未出库，无销售</span>');
+          const saleFormula = isFixed
+            ? (r.out_qty > 0
+                ? `<span style="color:#7b1fa2;">并入整单固返价 <strong>¥${(parseFloat(res.fixed_price) || 0).toFixed(2)}</strong></span>`
+                : '<span style="color:var(--text-light);">未出库，无销售</span>')
+            : (r.set_member
+                ? '<span style="color:var(--text-light);">并入套装行计价（不再单独算）</span>'
+                : (r.out_qty > 0
+                    ? `¥${(r.next_day_price || 0).toFixed(2)} × ${r.is_set ? this._fmtQty(r.set_units || 0) + '（套数）' : r.in_qty + '（本单内数量）'} = <strong>¥${r.sale.toFixed(2)}</strong>`
+                    : '<span style="color:var(--text-light);">未出库，无销售</span>'));
           // 「沿用价」：出库次日那一天没有这个商品的行情，系统退用了更早一次的价
           // （图表上缺失日会沿用补线，所以图和这里必须都是"沿用"的语义，否则对不上）
           const isBackfill = !!(r.next_day_price > 0 && r.price_date && r.price_date !== r.next_day && r.out_qty > 0);
-          const statusBadge = r.set_member
+          const statusBadge = isFixed
+            ? (r.out_qty > 0
+                ? '<span class="badge" style="background:#f3e5f5;color:#7b1fa2;" title="本单固返单：整单按固返价结算，不看行情">固返</span>'
+                : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>')
+            : (r.set_member
             ? '<span class="badge" style="background:#ede7f6;color:#5e35b1;">套装组成</span>'
             : (r.out_qty > 0
                 ? (r.await_price
@@ -1019,7 +1032,7 @@ const TransactionsModule = {
                             ? `<span class="badge" style="background:#fff3e0;color:#b26a00;" title="取价日${isHoldSoldRow ? '＝卖出当天' : '＝出库次日'}。取价日当天没单独录这个商品的行情，就按「哪天没录就沿用前一天的价」沿用了更早录入的价；想单独录取价日的价，点「改行情」">沿用价</span>`
                             : '<span class="badge badge-stock-normal">已算</span>')
                         : '<span class="badge badge-stock-low">待行情</span>'))
-                : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>');
+                : '<span class="badge" style="background:#f0f0f0;color:#666;">未出</span>'));
           return `
             <tr style="border-bottom:1px solid var(--border);">
               <td style="padding:8px;vertical-align:top;">
@@ -1031,11 +1044,18 @@ const TransactionsModule = {
                 ${r.out_date ? `<div>出库日：<strong>${r.out_date}</strong></div><div>取价日：<strong>${r.next_day}</strong><span style="font-size:10px;color:${isHoldSoldRow ? '#b26a00' : 'var(--text-light)'};">${isHoldSoldRow ? '（卖出当天）' : '（次日）'}</span></div>` : '<span style="color:var(--text-light);">—</span>'}
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
-                ${r.next_day_price > 0
-                  ? `<div><strong>¥${r.next_day_price.toFixed(2)}</strong></div><div style="font-size:10px;line-height:1.5;margin-top:2px;color:${r.price_date && r.price_date !== r.next_day ? '#b26a00' : 'var(--text-light)'};">取价日 ${String(r.next_day).slice(5)}${r.price_date && r.price_date !== r.next_day ? `<br>（取价日当天没单独录，沿用 ${String(r.price_date).slice(5)} 的价）` : ''}</div>`
-                  : '<span style="color:var(--text-light);">—</span>'}
-                ${r.await_price ? `<div style="font-size:10px;color:#e65100;margin-top:3px;">${r.next_day} 录价后自动重算</div>` : ''}
-                ${r.out_qty > 0 ? `<button class="btn btn-sm ${r.next_day_price > 0 ? 'btn-secondary' : 'btn-primary'}" style="margin-top:5px;white-space:nowrap;" onclick="TransactionsModule._showBackfillPrice(${i})">${r.next_day_price > 0 ? '改行情' : '补录行情'}</button>` : ''}
+                ${isFixed
+                  ? (r.out_qty > 0 && !r.set_member
+                      ? `<div><strong style="color:#7b1fa2;">¥${(parseFloat(res.fixed_price) || 0).toFixed(2)}</strong></div><div style="font-size:10px;color:#7b1fa2;margin-top:2px;">整单固返价</div>`
+                      : '<span style="color:var(--text-light);">—</span>')
+                  : (r.next_day_price > 0
+                      ? `<div><strong>¥${r.next_day_price.toFixed(2)}</strong></div><div style="font-size:10px;line-height:1.5;margin-top:2px;color:${r.price_date && r.price_date !== r.next_day ? '#b26a00' : 'var(--text-light)'};">取价日 ${String(r.next_day).slice(5)}${r.price_date && r.price_date !== r.next_day ? `<br>（取价日当天没单独录，沿用 ${String(r.price_date).slice(5)} 的价）` : ''}</div>`
+                      : '<span style="color:var(--text-light);">—</span>')}
+                ${!isFixed && r.await_price ? `<div style="font-size:10px;color:#e65100;margin-top:3px;">${r.next_day} 录价后自动重算</div>` : ''}
+                ${r.out_qty > 0 ? `<div style="margin-top:5px;display:flex;gap:6px;flex-wrap:wrap;">
+                  ${isFixed ? '' : `<button class="btn btn-sm ${r.next_day_price > 0 ? 'btn-secondary' : 'btn-primary'}" style="white-space:nowrap;" onclick="TransactionsModule._showBackfillPrice(${i})">${r.next_day_price > 0 ? '改行情' : '补录行情'}</button>`}
+                  <button class="btn btn-sm ${isFixed ? 'btn-primary' : 'btn-secondary'}" style="white-space:nowrap;" onclick="TransactionsModule._showFixedPrice()">${isFixed ? '改固返价' : '固返价'}</button>
+                </div>` : ''}
               </td>
               <td style="padding:8px;vertical-align:top;font-size:12px;">
                 ${saleFormula}
@@ -1055,6 +1075,7 @@ const TransactionsModule = {
             : '<span style="color:var(--text-secondary);">尚未出库，无法计算</span>';
         }
       }
+      else if (res.fixed_price > 0) summaryText = `<strong style="color:#7b1fa2;">整单固返价 = ¥${(parseFloat(res.fixed_price) || 0).toFixed(2)}</strong>`;
       else if (!res.has_market) summaryText = '<span style="color:var(--text-secondary);">出库次日行情未录，暂无法计算</span>';
       else summaryText = `<strong>销售 ${res.detail.filter(r => r.out_qty > 0 && !r.set_member).length} 项</strong> = ¥${sale.toFixed(2)}`;
 
@@ -1064,12 +1085,17 @@ const TransactionsModule = {
         ? `<div style="margin-top:8px;padding:8px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;color:#8a6d00;line-height:1.6;">本单有 <strong>${carried.length}</strong> 项的<b>取价日当天没单独录行情</b>，按「哪天没录就沿用前一天的价」的规则沿用了更早录入的价：${carried.map(r => `取价日 ${String(r.next_day).slice(5)} ← 沿用 ${String(r.price_date).slice(5)}（¥${(r.next_day_price || 0).toFixed(2)}）`).join('；')}。想改成取价日那天的价，点对应行的「改行情」单独补录即可。</div>`
         : '';
 
+      // 固返价提示：整单按固返价结算，行情完全不参与
+      const fixedNote = (parseFloat(res.fixed_price) || 0) > 0
+        ? `<div style="margin-top:8px;padding:8px;background:#f3e5f5;border:1px solid #ce93d8;border-radius:6px;color:#6a1b9a;line-height:1.6;">本单是<b>固返单</b>：销售额固定按 <strong>¥${(parseFloat(res.fixed_price) || 0).toFixed(2)}</strong> 结算（整单一个价、不乘数量），<b>不跟行情变动</b> —— 行情怎么变都不影响这一单的利润。想改回按行情算，点下面任意一行的「改固返价」，把金额清空即可。</div>`
+        : '';
+
       document.getElementById('modal-body').innerHTML = `
         <div style="padding:4px 0;">
           <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);">
             <div>订单号：<strong style="color:var(--primary);">${orderNo}</strong></div>
             <div>成本（整单金额）：<strong>¥${cost.toFixed(2)}</strong></div>
-            <div>销售（取价日行情 × 本单数量）：<strong>${summaryText}</strong></div>
+            <div>销售${(parseFloat(res.fixed_price) || 0) > 0 ? '（整单固返价）' : '（取价日行情 × 本单数量）'}：<strong>${summaryText}</strong></div>
             <div>单利润：${res.has_out
               ? `<strong style="color:${profitColor};font-size:16px;">${profit >= 0 ? '+' : ''}¥${profit.toFixed(2)}</strong>`
               : (res.holding
@@ -1077,6 +1103,7 @@ const TransactionsModule = {
                   : '<strong style="color:var(--text-secondary);font-size:16px;">待整单出库</strong>')}</div>
             ${res.await_price ? `<div style="margin-top:8px;padding:8px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;color:#8a6d00;line-height:1.6;">本单有 <strong>${res.await_count}</strong> 项是<b>今天出库</b>，出库次日（<strong>${res.await_date}</strong>）的行情还没到，上面的销售和利润是先用最近一次的价（${res.detail.filter(r => r.await_price && r.price_date).map(r => r.price_date).join('、')}）<strong>暂计</strong>。明天录入 ${res.await_date} 的价后会自动重算，不用手动改。</div>` : ''}
             ${carryNote}
+            ${fixedNote}
           </div>
           <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">各商品计算明细：</div>
           <div style="overflow-x:auto;">
@@ -1097,6 +1124,7 @@ const TransactionsModule = {
             <strong>计算规则：</strong>成本 = 整单金额（首个商品填的金额）；销售 = 各商品<b>取价日</b>当天的行情价 × 该商品在本单内的全部数量；利润 = 销售 - 成本。<br>
             <strong>取价日：</strong>普通出库 ＝ <b>出库日的次日</b>；<b>档口寄存后卖出</b>的商品 ＝ <b>卖出当天</b>（点「已卖出」时选的那天）。哪天没单独录这个商品的行情，就按「<b>哪天没录就沿用前一天的价</b>」往前沿用 —— 取价日不变，只是这个价来自更早录入的那一次（明细里会标出沿用自哪天）。<br>
             <strong>怎么算「已出库」：</strong>按同一物品编码的入库时间<b>先进先出</b>——出库量从最早入库的那批开始扣，扣到了本单这批才算本单已出库（因为出库记录里没登记属于哪一张入库单）。<br>
+            <strong style="color:#7b1fa2;">固返价：</strong>有些单是<b>固返单</b>——不管行情怎么变，货出给别人后对方都按事先谈好的固返价结算。在已出库的行点「固返价」，填一个<b>整单结算总额</b>，这一单的销售/利润就固定按它算（整单一个价、❌不乘数量、也不再看行情）；入库到出库之间照旧按行情。填了固返价的单每行会标上紫色「固返」。<br>
             ${res.hold_sold ? `<strong>寄存计价：</strong>这一单是<b>档口寄存</b>后卖出的 —— 寄存在档口的商品按<b>卖出当天（${res.hold_sold}）</b>的行情价计算；没寄存的商品仍按「出库日的次日」。` : ''}
           </p>
         </div>
@@ -1168,6 +1196,74 @@ const TransactionsModule = {
       showToast(`已记录 ${date} 行情 ¥${price.toFixed(2)}，利润已重算`);
       this._dashData = null;   // 仪表盘缓存失效，下次进信息台账会重新拉
       await this._showOrderProfitDetail(this._profitOrderNo);
+    } catch (e) {
+      showToast('保存失败：' + e.message);
+    }
+  },
+
+  // 固返价（2026-10-14）：有些单是「固返单」——不管行情怎么变，货出给别人后对方都按
+  // 事先谈好的固返价结算。这里给这一整单填一个固定结算总额，之后这单的销售/利润就
+  // 固定按它算、不再看行情（整单一个价，不乘数量）。清空金额 = 取消固返价、恢复按行情。
+  async _showFixedPrice() {
+    const orderNo = this._profitOrderNo;
+    if (!orderNo) { showToast('请先从单利润明细里打开'); return; }
+    this._fixedOrderNo = orderNo;
+    showModal('💰 固返价');
+    document.getElementById('modal-body').innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-secondary);">加载中...</div>';
+    let cost = 0, cur = 0, saleNow = 0;
+    try {
+      const res = await API.get(`/api/main/order-profit?orderNo=${encodeURIComponent(orderNo)}`);
+      cost = parseFloat(res.cost_price) || 0;
+      cur = parseFloat(res.fixed_price) || 0;
+      saleNow = parseFloat(res.sale_price) || 0;
+    } catch (e) {}
+    showModal('💰 固返价');
+    document.getElementById('modal-body').innerHTML = `
+      <div style="padding:8px;">
+        <div style="background:var(--bg);padding:10px;border-radius:6px;margin-bottom:14px;font-size:12px;color:var(--text-secondary);line-height:1.9;">
+          <div>订单号：<strong style="color:var(--primary);">${orderNo}</strong></div>
+          <div>成本（整单金额）：<strong>¥${cost.toFixed(2)}</strong></div>
+          <div>${cur > 0 ? '已填固返价' : '当前按行情算的销售'}：<strong style="color:${cur > 0 ? '#7b1fa2' : 'var(--text)'};">¥${(cur > 0 ? cur : saleNow).toFixed(2)}</strong></div>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label>固返价（整单结算总额 ¥）</label>
+          <input type="number" id="fp-price-value" step="0.01" min="0" value="${cur > 0 ? cur : ''}" style="width:100%;padding:10px;font-size:18px;text-align:center;" placeholder="填入对方按固返价结算给这一整单的总额" autofocus />
+          <div style="font-size:11px;color:var(--text-light);margin-top:6px;line-height:1.7;">
+            固返单专用：不管行情怎么变，这一整单都按你填的<b>总额</b>结算（<b>整单一个价、不乘数量</b>）。<br>
+            入库到出库之间照旧按行情；填了固返价后，这一单的销售/利润就用固返价算，<b>不再看行情</b>，也不用再「等次日行情」。
+          </div>
+        </div>
+        <div id="fp-preview" style="margin-bottom:14px;padding:10px;border-radius:6px;background:var(--bg);font-size:13px;text-align:center;"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${cur > 0 ? '<button class="btn btn-danger" onclick="TransactionsModule._saveFixedPrice(true)" style="flex:1;min-width:120px;">取消固返价</button>' : ''}
+          <button class="btn btn-secondary" onclick="TransactionsModule._showOrderProfitDetail()" style="flex:1;min-width:90px;">返回</button>
+          <button class="btn btn-primary" onclick="TransactionsModule._saveFixedPrice(false)" style="flex:1;min-width:110px;">保存并重算</button>
+        </div>
+      </div>
+    `;
+    const inp = document.getElementById('fp-price-value');
+    const pv = document.getElementById('fp-preview');
+    const upd = () => {
+      const v = parseFloat(inp && inp.value) || 0;
+      if (!v) { pv.innerHTML = '<span style="color:var(--text-light);">还没填固返价</span>'; return; }
+      const p = Number((v - cost).toFixed(2));
+      const c = p > 0 ? 'var(--success)' : (p < 0 ? 'var(--danger)' : 'var(--text-light)');
+      pv.innerHTML = `固返价 ¥${v.toFixed(2)} − 成本 ¥${cost.toFixed(2)} = 单利润 <strong style="color:${c};">${p >= 0 ? '+' : ''}¥${p.toFixed(2)}</strong>`;
+    };
+    if (inp) { inp.addEventListener('input', upd); upd(); setTimeout(() => inp.focus(), 100); }
+  },
+
+  async _saveFixedPrice(clear) {
+    const orderNo = this._fixedOrderNo || this._profitOrderNo;
+    if (!orderNo) { showToast('订单号丢失，请重新打开单利润'); return; }
+    const el = document.getElementById('fp-price-value');
+    const price = clear ? 0 : parseFloat(el && el.value);
+    if (!clear && (isNaN(price) || price < 0)) { showToast('请输入有效的固返价金额'); return; }
+    try {
+      await API.post('/api/main/fixed-price', { order_no: orderNo, price: clear ? 0 : Number(price.toFixed(2)) });
+      showToast(clear ? '已取消固返价，改回按行情计算' : `已记录固返价 ¥${price.toFixed(2)}，利润已重算`);
+      this._dashData = null;   // 仪表盘缓存失效，下次进信息台账会重新拉
+      await this._showOrderProfitDetail();
     } catch (e) {
       showToast('保存失败：' + e.message);
     }
