@@ -967,7 +967,14 @@ tr[draggable="true"]:hover { background: #f0f7ff !important; }
 tr.drag-source { opacity: 0.45; }
 tr.drag-over { border-top: 2px solid #1a73e8; background: #e8f0fe !important; }
 
-/* ========== 单号统计：下单设备/下级 可点击修改（2026-10-15） ========== */
-.device-editable { transition: border-color 0.15s, background 0.15s; }
-.device-editable:hover { border-color: var(--primary); background: rgba(26,115,232,0.05); }
-.device-editable:active { background: rgba(26,115,232,0.1); }
+/* ========== 单号统计：下单设备/下级 点名字就能改（2026-10-15） ==========
+   ❗不加任何提示标签，外观与普通文本一致；只靠悬停变色暗示"这里能点" */
+.device-editable-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 4px;
+  transition: color 0.15s;
+}
+.device-editable-value.is-empty { color: var(--text-light); font-weight: 400; }
+.device-editable:hover .device-editable-value { color: var(--primary); }

@@ -883,10 +883,12 @@ const TransactionsModule = {
               const allOfOrder = (this._inboundAllRecords || []).filter(r => (r.order_no || '（无单号）') === orderKey);
               const src = allOfOrder.length ? allOfOrder : items;
               const devices = [...new Set(src.map(r => String(r.device || '').trim()).filter(Boolean))];
+              // ❗不加任何「✏️ 点击修改」之类的提示标签（2026-10-15 用户明确要求去掉，截图圈掉了）：
+              //   外观和以前完全一样，就是设备名那一行本身能点。悬停时名字变主色（样式在 style.css）
               return `
-              <div class="device-editable" style="margin-top:10px;padding:8px 10px;border:1px dashed var(--border);border-radius:6px;cursor:pointer;" onclick="event.stopPropagation();TransactionsModule.showFillDevice('${cacheKey}','edit')" title="点一下修改这一单的下单设备 / 下级">
-                <div style="font-size:12px;color:var(--text-secondary);">下单设备/下级 <span style="font-size:11px;color:var(--primary);">✏️ 点击修改</span></div>
-                <div style="font-size:14px;font-weight:600;color:${devices.length ? 'var(--text-primary)' : 'var(--text-light)'};margin-top:4px;">${devices.length ? this._escHtml(devices.join('、')) : '未填 · 点这里补上'}</div>
+              <div class="device-editable" style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);cursor:pointer;" onclick="event.stopPropagation();TransactionsModule.showFillDevice('${cacheKey}','edit')" title="点一下修改这一单的下单设备 / 下级">
+                <div style="font-size:12px;color:var(--text-secondary);">下单设备/下级</div>
+                <div class="device-editable-value${devices.length ? '' : ' is-empty'}">${devices.length ? this._escHtml(devices.join('、')) : '未填 · 点这里补上'}</div>
               </div>`;
             })()}
           </div>
