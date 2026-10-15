@@ -966,3 +966,8 @@ tr[draggable="true"] { transition: background 0.15s; }
 tr[draggable="true"]:hover { background: #f0f7ff !important; }
 tr.drag-source { opacity: 0.45; }
 tr.drag-over { border-top: 2px solid #1a73e8; background: #e8f0fe !important; }
+
+/* ========== 单号统计：下单设备/下级 可点击修改（2026-10-15） ========== */
+.device-editable { transition: border-color 0.15s, background 0.15s; }
+.device-editable:hover { border-color: var(--primary); background: rgba(26,115,232,0.05); }
+.device-editable:active { background: rgba(26,115,232,0.1); }

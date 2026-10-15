@@ -906,8 +906,9 @@ module.exports = function(db) {
     try {
       const { ids, device } = req.body;
       if (!ids || !Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: '请选择要补填的入库记录' });
+      // ⚠️ 允许空值：2026-10-15 起「单号统计」里可以点开修改，
+      //    清空保存 = 取消这一单的设备归属（补填入口仍由前端拦着必填，不受影响）
       const dev = String(device == null ? '' : device).trim();
-      if (!dev) return res.status(400).json({ error: '请填写下单设备 / 下级' });
 
       const placeholders = ids.map(() => '?').join(',');
       await db.query(

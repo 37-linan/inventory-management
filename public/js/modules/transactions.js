@@ -876,12 +876,17 @@ const TransactionsModule = {
             <div style="font-size:15px;font-weight:600;color:var(--primary);margin-top:4px;">${orderNo}</div>
             <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">${this._fmtDateTime(items[0].created_at)}</div>
             ${(() => {
-              const devices = [...new Set(items.map(r => (r.device || '').trim()).filter(Boolean))];
-              if (devices.length === 0) return '';
+              // 下单设备/下级（2026-10-15 用户要求）：点一下就能改。
+              // ⚠️ 设备归属按「整单第一条填了值的记录」算，所以这里读整单**全量**记录，
+              //    不能只看当前筛选命中的那几条，否则筛选状态下会误显示成「未填」。
+              const orderKey = items[0].order_no || '（无单号）';
+              const allOfOrder = (this._inboundAllRecords || []).filter(r => (r.order_no || '（无单号）') === orderKey);
+              const src = allOfOrder.length ? allOfOrder : items;
+              const devices = [...new Set(src.map(r => String(r.device || '').trim()).filter(Boolean))];
               return `
-              <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
-                <div style="font-size:12px;color:var(--text-secondary);">下单设备/下级</div>
-                <div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-top:4px;">${devices.join('、')}</div>
+              <div class="device-editable" style="margin-top:10px;padding:8px 10px;border:1px dashed var(--border);border-radius:6px;cursor:pointer;" onclick="event.stopPropagation();TransactionsModule.showFillDevice('${cacheKey}','edit')" title="点一下修改这一单的下单设备 / 下级">
+                <div style="font-size:12px;color:var(--text-secondary);">下单设备/下级 <span style="font-size:11px;color:var(--primary);">✏️ 点击修改</span></div>
+                <div style="font-size:14px;font-weight:600;color:${devices.length ? 'var(--text-primary)' : 'var(--text-light)'};margin-top:4px;">${devices.length ? this._escHtml(devices.join('、')) : '未填 · 点这里补上'}</div>
               </div>`;
             })()}
           </div>
@@ -1385,51 +1390,78 @@ const TransactionsModule = {
     }
   },
 
-  // ===== 补填「下单设备 / 下级」（2026-10-12 用户要求）=====
-  // 只有「整单一条都没填过设备」的单号，组头才出现 📝 补填下单设备 按钮；
-  // 入库时就填过的单子不会出现按钮，组头也不加任何标识（2026-10-12 用户要求）。
-  // ⚠️ 补填范围 = 该单号的**全部**记录（不是当前筛选命中的那几条），否则设备归属会对不上。
-  showFillDevice(cacheKey) {
+  // ===== 补填 / 修改「下单设备 / 下级」（2026-10-12 补填、2026-10-15 可修改）=====
+  // 入口有两个：
+  //  ① 组头 📝 补填下单设备 —— 只有「整单一条都没填过设备」的单号才出现（模式 = 补填）
+  //  ② 单号统计弹窗里点「下单设备/下级」—— 任何单都能点，改已有值或补上（模式 = 'edit'）
+  // 入库时就填过的单子，组头不会出现按钮，也不加任何标识（2026-10-12 用户要求）。
+  // ⚠️ 作用范围 = 该单号的**全部**记录（不是当前筛选命中的那几条），否则设备归属会对不上。
+  showFillDevice(cacheKey, mode) {
     const items = (this._groupStatsCache || {})[cacheKey];
     if (!items || !items.length) { showToast('数据已刷新，请再点一次'); return; }
     const system = this._inboundSystem || 'main';
     const orderNo = items[0].order_no || '（无单号）';
-    const ids = (this._inboundAllRecords || [])
-      .filter(r => (r.order_no || '（无单号）') === orderNo)
-      .map(r => r.id);
-    if (!ids.length) { showToast('这一单没有可补填的记录'); return; }
+    // 整单全量记录（含被筛选隐藏的）：补填/修改都要覆盖整单，否则设备归属对不上
+    const allOfOrder = (this._inboundAllRecords || [])
+      .filter(r => (r.order_no || '（无单号）') === orderNo);
+    let ids = allOfOrder.map(r => r.id);
+    if (!ids.length) ids = items.map(r => r.id);   // 兜底：数据还没加载全时用当前分组
+    if (!ids.length) { showToast('这一单没有可修改的记录'); return; }
+
+    // 模式：'edit' = 从单号统计里点进来（叠第二层弹窗，改完回到统计）；
+    //       其它 = 组头「补填」（不带当前值、必填）
+    const isEdit = mode === 'edit';
+    const currentDevice = [...new Set(allOfOrder.map(r => String(r.device || '').trim()).filter(Boolean))].join('、');
+
     this._fillDeviceIds = ids;
+    this._fillDeviceMode = isEdit ? 'edit' : 'fill';
+    this._fillDeviceKey = cacheKey;
+    this._fillDeviceOrderNo = orderNo;
 
     const options = this._inboundDeviceOptions();
-    showModal('📝 补填下单设备 / 下级');
-    const body = document.getElementById('modal-body');
+    const inputId = isEdit ? 'fill-device-2' : 'fill-device';
+    if (isEdit) showModal2('✏️ 修改下单设备 / 下级'); else showModal('📝 补填下单设备 / 下级');
+    const body = document.getElementById(isEdit ? 'modal-body-2' : 'modal-body');
+    if (!body) return;
     body.innerHTML = `
       <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
-        单号 <strong style="color:var(--primary);">${this._escHtml(orderNo)}</strong> 这 <strong>${ids.length}</strong> 条记录都没有填「下单设备 / 下级」，
-        补上后整单一起生效（设备投入、盈亏拆分都会算到它名下）。
+        ${isEdit
+          ? `把单号 <strong style="color:var(--primary);">${this._escHtml(orderNo)}</strong> 的「下单设备 / 下级」改成新的值，保存后这 <strong>${ids.length}</strong> 条记录一起生效（设备投入、盈亏拆分都会跟着变）。<br><span style="color:var(--text-light);">想把这一单的设备归属取消掉，把内容清空保存即可。</span>`
+          : `单号 <strong style="color:var(--primary);">${this._escHtml(orderNo)}</strong> 这 <strong>${ids.length}</strong> 条记录都没有填「下单设备 / 下级」，
+        补上后整单一起生效（设备投入、盈亏拆分都会算到它名下）。`}
       </div>
       ${options.length ? `<div style="margin-bottom:12px;">
         <div style="font-size:12px;color:var(--text-light);margin-bottom:6px;">之前用过的（点一下就填上）：</div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;">
-          ${options.map(d => `<span class="filter-chip" style="cursor:pointer;" onclick="TransactionsModule._pickFillDevice(this)" data-device="${this._escHtml(d)}">${this._escHtml(d)}</span>`).join('')}
+          ${options.map(d => `<span class="filter-chip" style="cursor:pointer;" onclick="TransactionsModule._pickFillDevice(this)" data-device="${this._escHtml(d)}" data-target="${inputId}">${this._escHtml(d)}</span>`).join('')}
         </div>
       </div>` : ''}
       <div class="form-group">
-        <label>下单设备 / 下级 <span style="color:var(--danger)">*</span></label>
-        <input type="text" id="fill-device" list="fill-device-options" placeholder="设备名称或下级单位，例如 1 / 李楠" />
-        <datalist id="fill-device-options">${options.map(d => `<option value="${this._escHtml(d)}"></option>`).join('')}</datalist>
+        <label>下单设备 / 下级 ${isEdit ? '' : '<span style="color:var(--danger)">*</span>'}</label>
+        <input type="text" id="${inputId}" list="${inputId}-options" placeholder="设备名称或下级单位，例如 1 / 李楠" value="${this._escHtml(currentDevice)}" />
+        <datalist id="${inputId}-options">${options.map(d => `<option value="${this._escHtml(d)}"></option>`).join('')}</datalist>
       </div>
       <div style="display:flex;gap:10px;margin-top:14px;">
         <button class="btn btn-primary btn-lg" style="flex:1;" onclick="TransactionsModule.submitFillDevice('${system}')">保存</button>
-        <button class="btn btn-secondary btn-lg" style="flex:1;" onclick="closeModal()">取消</button>
+        <button class="btn btn-secondary btn-lg" style="flex:1;" onclick="${isEdit ? 'closeModal2()' : 'closeModal()'}">取消</button>
       </div>
     `;
-    setTimeout(() => { const el = document.getElementById('fill-device'); if (el) el.focus(); }, 100);
+    setTimeout(() => { const el = document.getElementById(inputId); if (el) el.focus(); }, 100);
+  },
+
+  // 重绘后组的 cacheKey（g0/g1…）会变，按订单号找回当前那一个，供改完设备后刷新统计弹窗用
+  _findGroupKeyByOrder(orderNo) {
+    const cache = this._groupStatsCache || {};
+    for (const k of Object.keys(cache)) {
+      const its = cache[k];
+      if (its && its.length && (its[0].order_no || '（无单号）') === orderNo) return k;
+    }
+    return null;
   },
 
   // 点「用过的设备」胶囊 → 填进输入框（手机上 datalist 不好用，给个能点的）
   _pickFillDevice(el) {
-    const input = document.getElementById('fill-device');
+    const input = document.getElementById((el && el.dataset && el.dataset.target) || 'fill-device');
     if (!input || !el) return;
     input.value = el.dataset.device || el.textContent.trim();
     el.classList.add('active');
@@ -1437,20 +1469,31 @@ const TransactionsModule = {
   },
 
   async submitFillDevice(system) {
-    const input = document.getElementById('fill-device');
+    const isEdit = this._fillDeviceMode === 'edit';
+    const input = document.getElementById(isEdit ? 'fill-device-2' : 'fill-device');
     const device = input ? String(input.value || '').trim() : '';
     const ids = this._fillDeviceIds || [];
-    if (!device) { showToast('请填写下单设备 / 下级'); return; }
-    if (!ids.length) { showToast('没有要补填的记录'); return; }
+    // 补填模式必填；修改模式允许清空（= 取消这一单的设备归属）
+    if (!isEdit && !device) { showToast('请填写下单设备 / 下级'); return; }
+    if (!ids.length) { showToast('没有要修改的记录'); return; }
     try {
       await API.patch(`/api/${system}/inbound/batch-device`, { ids, device });
-      showToast(`已为这 ${ids.length} 条记录补上「${device}」`);
+      showToast(isEdit
+        ? (device ? `已把这 ${ids.length} 条记录的「下单设备 / 下级」改为「${device}」` : `已清除这 ${ids.length} 条记录的下单设备 / 下级`)
+        : `已为这 ${ids.length} 条记录补上「${device}」`);
+      const orderNo = this._fillDeviceOrderNo;
       this._fillDeviceIds = [];
-      closeModal();
+      this._fillDeviceMode = '';
+      if (isEdit) closeModal2(); else closeModal();
       await this._refreshInboundTable(system);
       if (this.currentTab === 'ledger') await this.renderLedgerTab(system);
+      // 从「单号统计」点进来的：改完把统计弹窗一起刷成新值（弹窗还开着才刷）
+      if (isEdit && orderNo && document.getElementById('modal-overlay')?.classList.contains('show')) {
+        const key = this._findGroupKeyByOrder(orderNo);
+        if (key) this._showGroupStats(key, orderNo);
+      }
     } catch (e) {
-      showToast('补填失败: ' + e.message);
+      showToast('保存失败: ' + e.message);
     }
   },
 
